@@ -1,3 +1,6 @@
+import types
+from typing import Any
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -20,13 +23,8 @@ def reference_bf16():
     )
     input_ids = tokenizer(text, return_tensors="pt").to(model.device)
 
-    # output = model.generate(**input_ids, cache_implementation="static", max_length=39)
-    output = model.generate(
-        **input_ids,
-        cache_implementation="static",
-        max_length=(input_ids["input_ids"].shape[1] + 1),
-    )
-    print(tokenizer.decode(output[0], skip_special_tokens=True))
+    output = model.generate(**input_ids, cache_implementation="static", max_length=39)
+    print(tokenizer.decode(output[0], skip_special_tokens=False))
 
 
 def reference_f16():
@@ -36,14 +34,56 @@ def reference_f16():
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        dtype=torch.float32,
+        dtype=torch.float16,
         device_map="auto",
         # attn_implementation="sdpa",
     )
+
+    # Patch forward pass with clamping on the residual additions, which
+    # overflow float16 limits otherwise. Output is comparable to bf16 reference.
+    def patched_forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: torch.Tensor = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: Any = None,
+        **kwargs: Any,
+    ) -> tuple[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor] | None]:
+        residual = hidden_states
+
+        hidden_states = self.input_layernorm(hidden_states)
+
+        hidden_states, _ = self.self_attn(
+            hidden_states=hidden_states,
+            position_embeddings=position_embeddings,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            **kwargs,
+        )
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = (
+            (residual.float() + hidden_states.float()).clamp(max=65504).half()
+        )
+
+        residual = hidden_states
+        hidden_states = self.pre_feedforward_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.post_feedforward_layernorm(hidden_states)
+        hidden_states = (
+            (residual.float() + hidden_states.float()).clamp(max=65504).half()
+        )
+
+        return hidden_states
+
+    for layer in model.model.layers:
+        layer.forward = types.MethodType(patched_forward, layer)
+
     input_ids = tokenizer(text, return_tensors="pt").to(model.device)
 
     output = model.generate(**input_ids, cache_implementation="static", max_length=39)
-    print(tokenizer.decode(output[0], skip_special_tokens=True))
+    print(tokenizer.decode(output[0], skip_special_tokens=False))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import { safetensors, tokenizers, WeightMapper } from "@jax-js/loaders";
 import { readFileSync } from "node:fs";
 import { fromSafetensors } from "$lib/gemma3/model";
+import { PreTrainedTokenizer } from "@huggingface/transformers";
 
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
@@ -29,12 +30,21 @@ function test_fromSafetensors() {
 	console.log(weights.layers[0]);
 }
 
-function test_tokenizer() {
+function test_jaxjs_tokenizer() {
 	const data = readFileSync("tokenizer/tokenizer.model");
 	const tokenizer = tokenizers.Unigram.fromBinary(data);
 
-	const text = "Hello, world!";
+	console.log(tokenizer);
+
+	const text = "Plants create energy through a process known as";
 	console.log("Tokens: ", tokenizer.encode(text));
 }
 
-test_tokenizer();
+async function test_transformers_tokenizer() {
+	const tokenizer = await PreTrainedTokenizer.from_pretrained("./tokenizer/");
+
+	const text = "Plants create energy through a process known as";
+	console.log("Tokens: ", tokenizer.encode(text));
+}
+
+test_transformers_tokenizer();

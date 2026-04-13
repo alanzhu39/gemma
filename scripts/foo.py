@@ -1,16 +1,6 @@
-import types
-from typing import Any
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from safetensors import safe_open
-
-
-def test_tokenizer():
-    tokenizer = AutoTokenizer.from_pretrained("./tokenizer/")
-
-    text = "Hello, world!"
-    print("Tokens: ", tokenizer(text))
 
 
 def test_weights():
@@ -78,50 +68,14 @@ def test_overunderflow():
             print(f"{name}: has nan")
         # print(f"{name}: max={param.abs().max():.3f}")
 
-    def patched_forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: torch.Tensor = None,
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        past_key_values: Any = None,
-        **kwargs: Any,
-    ) -> tuple[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor] | None]:
-        residual = hidden_states
-
-        hidden_states = self.input_layernorm(hidden_states)
-
-        hidden_states, _ = self.self_attn(
-            hidden_states=hidden_states,
-            position_embeddings=position_embeddings,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            **kwargs,
-        )
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = (residual.float() + hidden_states.float()).half()
-
-        residual = hidden_states
-        hidden_states = self.pre_feedforward_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = self.post_feedforward_layernorm(hidden_states)
-        hidden_states = (residual.float() + hidden_states.float()).half()
-
-        return hidden_states
-
-    for layer in model.model.layers:
-        layer.forward = types.MethodType(patched_forward, layer)
-        # layer.__class__.forward = patched_forward
-
-    # import inspect
+    import inspect
 
     for name, module in model.named_modules():
         if "layers.7" not in name:
             continue
 
-        # if name == "model.layers.7":
-        #     print(inspect.getsource(module.__class__.forward))
+        if name == "model.layers.7":
+            print(inspect.getsource(module.__class__.forward))
 
         def hook(m, input, output, n=name):
             t = output if isinstance(output, torch.Tensor) else output[0]
@@ -151,11 +105,18 @@ def test_overunderflow():
 
     output = model.generate(
         **input_ids,
-        # cache_implementation="static",
-        max_length=(input_ids["input_ids"].shape[1] + 1),
+        cache_implementation="static",
+        max_length=(input_ids["input_ids"].shape[1] + 10),
     )
     print(tokenizer.decode(output[0], skip_special_tokens=True))
 
 
+def test_tokenizer():
+    tokenizer = AutoTokenizer.from_pretrained("./tokenizer/")
+
+    text = "Plants create energy through a process known as"
+    print("Tokens: ", tokenizer(text))
+
+
 if __name__ == "__main__":
-    test_overunderflow()
+    test_tokenizer()
