@@ -1,8 +1,9 @@
-import { safetensors, WeightMapper } from "@jax-js/loaders";
+import { safetensors, tokenizers, WeightMapper } from "@jax-js/loaders";
 import { readFileSync } from "node:fs";
 import { fromSafetensors } from "$lib/gemma3/model";
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+/* eslint-disable @typescript-eslint/no-unused-vars */
+
 function test_fromFile() {
 	const weightMapper = new WeightMapper({
 		autoCamelCase: true,
@@ -28,4 +29,12 @@ function test_fromSafetensors() {
 	console.log(weights.layers[0]);
 }
 
-test_fromSafetensors();
+function test_tokenizer() {
+	const data = readFileSync("tokenizer/tokenizer.model");
+	const tokenizer = tokenizers.Unigram.fromBinary(data);
+
+	const text = "Hello, world!";
+	console.log("Tokens: ", tokenizer.encode(text));
+}
+
+test_tokenizer();

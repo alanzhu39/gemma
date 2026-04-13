@@ -24,5 +24,8 @@ vite.config.ts.timestamp-*
 
 /.vscode
 /weights
+/tokenizer
+/model_bf16
+/model_f16
 /env
 /notes

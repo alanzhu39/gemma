@@ -2,6 +2,7 @@ import { safetensors, WeightMapper } from "@jax-js/loaders";
 import { numpy as np } from "@jax-js/jax";
 
 // Model weight and layer interfaces
+// Everything is in float32
 
 // Common interfaces
 
@@ -21,13 +22,9 @@ export type RMSNorm = {
 };
 
 export function runRMSNorm({ gamma }: RMSNorm, x: np.Array, eps: number = 1e-6): np.Array {
-	// Reference impl:
 	// RMSNorm: x * gamma / sqrt(var + eps)
-	const dtype = x.dtype;
-	x = x.astype(np.float32); // RMSNorm in high precision to avoid numerics issues.
 	const var_ = np.var_(x.ref, -1, { correction: 0, keepdims: true });
-	x = x.mul(gamma).div(np.sqrt(var_.add(eps)));
-	return x.astype(dtype);
+	return x.mul(gamma).div(np.sqrt(var_.add(eps)));
 }
 
 // Gemma3 interfaces
@@ -77,8 +74,8 @@ export function fromSafetensors(file: safetensors.File): Gemma3 {
 	const hydrated: Record<string, np.Array> = {};
 	for (const [key, value] of Object.entries(mappedWeights)) {
 		if (value.dtype === "F16") {
-			hydrated[key] = np.array(value.data as Float16Array<ArrayBuffer>, {
-				dtype: np.float16,
+			hydrated[key] = np.array(new Float32Array(value.data as Float16Array<ArrayBuffer>), {
+				dtype: np.float32,
 				shape: value.shape,
 			});
 		} else {
