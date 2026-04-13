@@ -38,6 +38,7 @@ export function runGemma3Step({ tokenEmbed, layers, norm }: Gemma3, x: np.Array)
 	// Token embedding weights unused here
 	tokenEmbed.dispose();
 
+	// TODO(opt): unroll?
 	for (const layer of layers) {
 		x = runDecoderLayer(layer, x);
 	}
@@ -69,13 +70,13 @@ function runDecoderLayer(
 	x = runRMSNorm(inputLayerNorm, x);
 	x = runAttention(selfAttn, x);
 	x = runRMSNorm(postAttentionLayernorm, x);
-	x = np.minimum(x.astype(np.float32).add(residual.astype(np.float32)), 65504.0).astype(np.float16);
+	x = np.clip(x.add(residual), -65504.0, 65504.0);
 
 	residual = x.ref;
 	x = runRMSNorm(preFeedforwardLayernorm, x);
 	x = runMLP(mlp, x);
 	x = runRMSNorm(postFeedforwardLayernorm, x);
-	x = np.minimum(x.astype(np.float32).add(residual.astype(np.float32)), 65504.0).astype(np.float16);
+	x = np.clip(x.add(residual), -65504.0, 65504.0);
 
 	return x;
 }

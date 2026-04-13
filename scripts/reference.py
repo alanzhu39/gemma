@@ -63,17 +63,13 @@ def reference_f16():
             **kwargs,
         )
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = (
-            (residual.float() + hidden_states.float()).clamp(max=65504).half()
-        )
+        hidden_states = (residual + hidden_states).clamp(min=-65504, max=65504)
 
         residual = hidden_states
         hidden_states = self.pre_feedforward_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = self.post_feedforward_layernorm(hidden_states)
-        hidden_states = (
-            (residual.float() + hidden_states.float()).clamp(max=65504).half()
-        )
+        hidden_states = (residual + hidden_states).clamp(min=-65504, max=65504)
 
         return hidden_states
 
