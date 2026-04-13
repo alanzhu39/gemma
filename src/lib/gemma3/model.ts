@@ -1,8 +1,7 @@
 import { safetensors, WeightMapper } from "@jax-js/loaders";
-import { numpy as np } from "@jax-js/jax";
+import { nn, numpy as np } from "@jax-js/jax";
 
 // Model weight and layer interfaces
-// Everything is in float32
 
 // Common interfaces
 
@@ -29,22 +28,57 @@ export function runRMSNorm({ gamma }: RMSNorm, x: np.Array, eps: number = 1e-6):
 
 // Gemma3 interfaces
 
-// TODO: runners
-
 export type Gemma3 = {
 	tokenEmbed: np.Array;
 	layers: Gemma3DecoderLayer[];
 	norm: RMSNorm;
 };
 
+export function runGemma3Step({ tokenEmbed, layers, norm }: Gemma3, x: np.Array): np.Array {
+	// Token embedding weights unused here
+	tokenEmbed.dispose();
+
+	for (const layer of layers) {
+		x = runDecoderLayer(layer, x);
+	}
+
+	return runRMSNorm(norm, x);
+}
+
 export type Gemma3DecoderLayer = {
-	inputLayerNorm: np.Array;
+	inputLayerNorm: RMSNorm;
 	selfAttn: Gemma3Attention;
 	postAttentionLayernorm: RMSNorm;
 	preFeedforwardLayernorm: RMSNorm;
 	mlp: Gemma3MLP;
 	postFeedforwardLayernorm: RMSNorm;
 };
+
+function runDecoderLayer(
+	{
+		inputLayerNorm,
+		selfAttn,
+		postAttentionLayernorm,
+		preFeedforwardLayernorm,
+		mlp,
+		postFeedforwardLayernorm,
+	}: Gemma3DecoderLayer,
+	x: np.Array,
+): np.Array {
+	let residual = x.ref;
+	x = runRMSNorm(inputLayerNorm, x);
+	x = runAttention(selfAttn, x);
+	x = runRMSNorm(postAttentionLayernorm, x);
+	x = np.minimum(x.astype(np.float32).add(residual.astype(np.float32)), 65504.0).astype(np.float16);
+
+	residual = x.ref;
+	x = runRMSNorm(preFeedforwardLayernorm, x);
+	x = runMLP(mlp, x);
+	x = runRMSNorm(postFeedforwardLayernorm, x);
+	x = np.minimum(x.astype(np.float32).add(residual.astype(np.float32)), 65504.0).astype(np.float16);
+
+	return x;
+}
 
 export type Gemma3Attention = {
 	qProj: Linear; // no bias
@@ -55,11 +89,23 @@ export type Gemma3Attention = {
 	qNorm: RMSNorm;
 };
 
+function runAttention(
+	{ qProj, kProj, vProj, oProj, kNorm, qNorm }: Gemma3Attention,
+	x: np.Array,
+): np.Array {
+	// TODO: RoPE, GQA, KV-cache
+	return np.zerosLike(x);
+}
+
 export type Gemma3MLP = {
 	downProj: Linear; // no bias
 	gateProj: Linear; // no bias
 	upProj: Linear; // no bias
 };
+
+function runMLP({ downProj, gateProj, upProj }: Gemma3MLP, x: np.Array): np.Array {
+	return runLinear(downProj, nn.gelu(runLinear(gateProj, x.ref)).mul(runLinear(upProj, x)));
+}
 
 const weightMapper = new WeightMapper({
 	suffix: {

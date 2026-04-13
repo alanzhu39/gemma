@@ -1,7 +1,8 @@
 import { safetensors } from "@jax-js/loaders";
 import { readFileSync } from "node:fs";
-import { fromSafetensors, type Gemma3 } from "./model";
+import { fromSafetensors, runGemma3Step, type Gemma3 } from "./model";
 import { PreTrainedTokenizer } from "@huggingface/transformers";
+import { numpy as np, tree } from "@jax-js/jax";
 
 // Run inference for model
 async function runInference() {
@@ -17,11 +18,11 @@ async function runInference() {
 	const tokens = tokenizer.encode(text);
 
 	// Embed tokens
-	// Slice weights.tokenEmbed
+	const tokensAr = np.array(tokens, { dtype: np.uint32 });
+	const embed = weights.tokenEmbed.ref.slice(tokensAr);
 
-	// Decoder layers foward
-
-	// Final RMS norm
+	// Run step(s)
+	const latent = runGemma3Step(tree.ref(weights), embed);
 
 	// Project back to token space
 }
