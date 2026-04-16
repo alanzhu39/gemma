@@ -2,6 +2,8 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from safetensors import safe_open
 
+from scripts.reference import get_reference_f16
+
 
 def test_weights():
     with (
@@ -118,5 +120,43 @@ def test_tokenizer():
     print("Tokens: ", tokenizer(text))
 
 
+def test_reference():
+    tokenizer, model = get_reference_f16()
+
+    for name, module in model.named_modules():
+        if "layers.0" not in name:
+            continue
+
+        def hook(m, input, output, n=name):
+            i = input[0] if len(input) > 0 else None
+            o = output if isinstance(output, torch.Tensor) else output[0]
+            print(n)
+            print(i)
+            print(o)
+
+        module.register_forward_hook(hook)
+
+    text = "Plants create energy through a process known as"
+    input_ids = tokenizer(text, return_tensors="pt").to(model.device)
+
+    print(input_ids["input_ids"])
+
+    output = model.generate(
+        **input_ids,
+        cache_implementation="static",
+        max_length=(input_ids["input_ids"].shape[1] + 1),
+    )
+    print(tokenizer.decode(output[0], skip_special_tokens=False))
+
+
+def test_modules():
+    tokenizer, model = get_reference_f16()
+
+    embed_tokens = model.get_submodule("model.embed_tokens")
+    print(embed_tokens.state_dict())
+    # input_layernorm_0 = model.get_submodule("model.layers.0.input_layernorm")
+    # print(input_layernorm_0.state_dict())
+
+
 if __name__ == "__main__":
-    test_tokenizer()
+    test_modules()

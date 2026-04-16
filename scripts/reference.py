@@ -27,7 +27,7 @@ def reference_bf16():
     print(tokenizer.decode(output[0], skip_special_tokens=False))
 
 
-def reference_f16():
+def get_reference_f16():
     tokenizer_path = "./tokenizer/"
     model_path = "./model_f16/"
 
@@ -75,6 +75,12 @@ def reference_f16():
 
     for layer in model.model.layers:
         layer.forward = types.MethodType(patched_forward, layer)
+
+    return tokenizer, model
+
+
+def reference_f16():
+    tokenizer, model = get_reference_f16()
 
     input_ids = tokenizer(text, return_tensors="pt").to(model.device)
 

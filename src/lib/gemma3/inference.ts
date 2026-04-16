@@ -12,12 +12,11 @@ export async function runInference(model: Gemma3, tokenizer: PreTrainedTokenizer
 
 	// Embed tokens
 	const tokensAr = np.array(tokens, { dtype: np.uint32 });
-	const embed = model.tokenEmbed.ref.slice(tokensAr);
 
 	console.log("Embedded tokens");
 
 	// Run step(s)
-	const latent = runGemma3Step(tree.ref(model), embed);
+	const latent = runGemma3Step(tree.ref(model), tokensAr);
 
 	console.log("Ran step");
 
@@ -25,11 +24,11 @@ export async function runInference(model: Gemma3, tokenizer: PreTrainedTokenizer
 	const outProj: Linear = {
 		weight: model.tokenEmbed.ref,
 	};
-	console.log(outProj.weight.shape, latent.shape);
-	const logits = runLinear(outProj, latent);
+	const logits = runLinear(outProj, latent.slice([-1]));
 
 	// Decode tokens
 	const probs = nn.softmax(logits, 1);
+	console.log(probs.ref.js());
 	const predictedTokens = np.argmax(probs, 1);
 	const decoded = tokenizer.decode(predictedTokens.js());
 

@@ -29,3 +29,4 @@ vite.config.ts.timestamp-*
 /model_f16
 /env
 /notes
+__pycache__/

@@ -20,10 +20,14 @@ export type RMSNorm = {
 	gamma: np.Array;
 };
 
-function runRMSNorm({ gamma }: RMSNorm, x: np.Array, eps: number = 1e-6): np.Array {
-	// RMSNorm: x * gamma / sqrt(var + eps)
-	const var_ = np.var_(x.ref, -1, { correction: 0, keepdims: true });
-	return x.mul(gamma).div(np.sqrt(var_.add(eps)));
+export function runRMSNorm({ gamma }: RMSNorm, x: np.Array, eps: number = 1e-6): np.Array {
+	// Gemma-style RMSNorm: out[i] = (input[i] / RMS(input)) * (weight[i] + 1)
+	const dtype = x.dtype;
+	x = x.astype(np.float32); // RMSNorm in high precision to avoid numerics issues.
+	x = x
+		.div(np.sqrt(np.square(x.ref).mean(-1, { keepdims: true }).add(eps)))
+		.mul(gamma.astype(np.float32).add(1));
+	return x.astype(dtype);
 }
 
 // Gemma3 interfaces
@@ -34,9 +38,9 @@ export type Gemma3 = {
 	norm: RMSNorm;
 };
 
-export function runGemma3Step({ tokenEmbed, layers, norm }: Gemma3, x: np.Array): np.Array {
+export function runGemma3Step({ tokenEmbed, layers, norm }: Gemma3, tokensAr: np.Array): np.Array {
 	// Token embedding weights unused here
-	tokenEmbed.dispose();
+	let x = runGemmaTextScaledWordEmbedding(tokenEmbed, tokensAr);
 
 	for (let i = 0; i < layers.length; i++) {
 		const isSlidingAttention = i != 5 && i != 11 && i != 17;
@@ -44,6 +48,14 @@ export function runGemma3Step({ tokenEmbed, layers, norm }: Gemma3, x: np.Array)
 	}
 
 	return runRMSNorm(norm, x);
+}
+
+export function runGemmaTextScaledWordEmbedding(
+	tokenEmbed: np.Array,
+	tokensAr: np.Array,
+	embedScale: number = 640 ** 0.5,
+): np.Array {
+	return tokenEmbed.slice(tokensAr).mul(embedScale);
 }
 
 export type Gemma3DecoderLayer = {
@@ -55,7 +67,7 @@ export type Gemma3DecoderLayer = {
 	postFeedforwardLayernorm: RMSNorm;
 };
 
-function runDecoderLayer(
+export function runDecoderLayer(
 	{
 		inputLayernorm,
 		selfAttn,

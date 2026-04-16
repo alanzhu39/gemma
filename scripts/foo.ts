@@ -1,8 +1,14 @@
 import { safetensors, tokenizers, WeightMapper } from "@jax-js/loaders";
-import { DType, numpy as np } from "@jax-js/jax";
+import { defaultDevice, DType, init, numpy as np, tree } from "@jax-js/jax";
 import { readFileSync } from "node:fs";
-import { fromSafetensors, runAttention, type Gemma3Attention } from "$lib/gemma3/model";
-import { PreTrainedTokenizer } from "@huggingface/transformers";
+import {
+	fromSafetensors,
+	runAttention,
+	type Gemma3,
+	type Gemma3Attention,
+} from "$lib/gemma3/model";
+import { runInference } from "$lib/gemma3/inference";
+import { AutoTokenizer, PreTrainedTokenizer } from "@huggingface/transformers";
 
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
@@ -80,4 +86,33 @@ function test_attention() {
 	console.log(runAttention(weights, x, true).shape);
 }
 
-test_attention();
+// Don't use, way too slow!
+async function test_local_inference() {
+	const devices = await init("cpu");
+	defaultDevice("cpu");
+
+	console.log("Running...");
+
+	const data = readFileSync("weights/model.f16.safetensors");
+	const file = safetensors.parse(data);
+	const weights: Gemma3 = fromSafetensors(file);
+	const text = "Plants create energy through a process known as";
+
+	console.log("Loaded weights");
+
+	const tokenizer = await AutoTokenizer.from_pretrained("./tokenizer/");
+
+	await runInference(weights, tokenizer, text);
+
+	tree.dispose(weights);
+}
+
+function test_modules() {
+	const buf = readFileSync("weights/model.f16.safetensors");
+	const file = safetensors.parse(buf); // => { tensors: { ... } };
+	const weights = fromSafetensors(file);
+
+	console.log(weights.layers[0].inputLayernorm.gamma.js());
+}
+
+test_modules();
