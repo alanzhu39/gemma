@@ -1,42 +1,29 @@
-import { safetensors } from "@jax-js/loaders";
-import { readFileSync } from "node:fs";
-import { fromSafetensors, runGemma3Step, runLinear, type Gemma3, type Linear } from "./model";
+import { runGemma3Step, runLinear, type Gemma3, type Linear } from "./model";
 import { PreTrainedTokenizer } from "@huggingface/transformers";
-import { init, nn, numpy as np, tree } from "@jax-js/jax";
+import { nn, numpy as np, tree } from "@jax-js/jax";
 
 // Run inference for model
-async function runInference() {
-	console.log(`Available devices: ${await init()}`);
-
-	// Load weights
-	const buf = readFileSync("weights/model.f16.safetensors");
-	const file = safetensors.parse(buf);
-	const weights: Gemma3 = fromSafetensors(file);
-
-	console.log("Loaded weights");
-
+export async function runInference(model: Gemma3, tokenizer: PreTrainedTokenizer, text: string) {
 	// Tokenize input
 	// TODO: custom tokenizer
-	const tokenizer = await PreTrainedTokenizer.from_pretrained("./tokenizer/");
-	const text = "Plants create energy through a process known as";
 	const tokens = tokenizer.encode(text);
 
 	console.log("Tokenized text");
 
 	// Embed tokens
 	const tokensAr = np.array(tokens, { dtype: np.uint32 });
-	const embed = weights.tokenEmbed.ref.slice(tokensAr);
+	const embed = model.tokenEmbed.ref.slice(tokensAr);
 
 	console.log("Embedded tokens");
 
 	// Run step(s)
-	const latent = runGemma3Step(tree.ref(weights), embed);
+	const latent = runGemma3Step(tree.ref(model), embed);
 
 	console.log("Ran step");
 
 	// Project back to token space
 	const outProj: Linear = {
-		weight: weights.tokenEmbed.ref,
+		weight: model.tokenEmbed.ref,
 	};
 	console.log(outProj.weight.shape, latent.shape);
 	const logits = runLinear(outProj, latent);
@@ -48,5 +35,3 @@ async function runInference() {
 
 	console.log(`${text} -> ${decoded}`);
 }
-
-runInference();
