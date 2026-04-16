@@ -1,3 +1,6 @@
+import types
+from typing import Any
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from safetensors import safe_open
@@ -121,7 +124,83 @@ def test_tokenizer():
 
 
 def test_reference():
+    def rotate_half(x):
+        """Rotates half the hidden dims of the input."""
+        x1 = x[..., : x.shape[-1] // 2]
+        x2 = x[..., x.shape[-1] // 2 :]
+        return torch.cat((-x2, x1), dim=-1)
+
+    def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
+        """Applies Rotary Position Embedding to the query and key tensors.
+
+        Args:
+            q (`torch.Tensor`): The query tensor.
+            k (`torch.Tensor`): The key tensor.
+            cos (`torch.Tensor`): The cosine part of the rotary embedding.
+            sin (`torch.Tensor`): The sine part of the rotary embedding.
+            unsqueeze_dim (`int`, *optional*, defaults to 1):
+                The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
+                sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
+                that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
+                k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
+                cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
+                the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
+        Returns:
+            `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
+        """
+        cos = cos.unsqueeze(unsqueeze_dim)
+        sin = sin.unsqueeze(unsqueeze_dim)
+        q_embed = (q * cos) + (rotate_half(q) * sin)
+        k_embed = (k * cos) + (rotate_half(k) * sin)
+        return q_embed, k_embed
+
+    def make_patched_forward(original_forward):
+        def patched_forward(
+            self,
+            hidden_states: torch.Tensor,
+            position_embeddings: torch.Tensor = None,
+            attention_mask: torch.Tensor | None = None,
+            past_key_values: Any | None = None,
+            **kwargs: Any,
+        ) -> tuple[torch.Tensor, torch.Tensor | None, tuple[torch.Tensor] | None]:
+            input_shape = hidden_states.shape[:-1]
+            hidden_shape = (*input_shape, -1, self.head_dim)
+
+            query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+            key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+            value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+            query_states = self.q_norm(query_states)
+            key_states = self.k_norm(key_states)
+
+            cos, sin = position_embeddings
+            print("cos")
+            print(cos)
+            print("sin")
+            print(sin)
+            query_states, key_states = apply_rotary_pos_emb(
+                query_states, key_states, cos, sin
+            )
+            print("query_states")
+            print(query_states)
+            print("key_states")
+            print(key_states)
+
+            return original_forward(
+                # self,
+                hidden_states,
+                position_embeddings,
+                attention_mask,
+                past_key_values,
+                **kwargs,
+            )
+
+        return patched_forward
+
     tokenizer, model = get_reference_f16()
+
+    layer = model.model.layers[0].self_attn
+    layer.forward = types.MethodType(make_patched_forward(layer.forward), layer)
 
     for name, module in model.named_modules():
         if "layers.0" not in name:
@@ -136,7 +215,8 @@ def test_reference():
 
         module.register_forward_hook(hook)
 
-    text = "Plants create energy through a process known as"
+    # text = "Plants create energy through a process known as"
+    text = "The capital of France is "
     input_ids = tokenizer(text, return_tensors="pt").to(model.device)
 
     print(input_ids["input_ids"])
@@ -152,11 +232,16 @@ def test_reference():
 def test_modules():
     tokenizer, model = get_reference_f16()
 
-    embed_tokens = model.get_submodule("model.embed_tokens")
-    print(embed_tokens.state_dict())
+    import inspect
+
+    print(
+        inspect.getsource(
+            model.get_submodule("model.layers.0.self_attn").__class__.forward
+        )
+    )
     # input_layernorm_0 = model.get_submodule("model.layers.0.input_layernorm")
     # print(input_layernorm_0.state_dict())
 
 
 if __name__ == "__main__":
-    test_modules()
+    test_reference()

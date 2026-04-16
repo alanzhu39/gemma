@@ -113,7 +113,7 @@ function precomputeRoPECache(
 } {
 	const invFreq = np.divide(
 		1,
-		np.pow(base, np.arange(0, headDim, 2, { dtype: DType.Float16 })).div(headDim),
+		np.pow(base, np.arange(0, headDim, 2, { dtype: DType.Float32 }).div(headDim)),
 	);
 	const positions = np.arange(S);
 
@@ -188,7 +188,7 @@ export type Gemma3MLP = {
 	upProj: Linear; // no bias
 };
 
-function runMLP({ downProj, gateProj, upProj }: Gemma3MLP, x: np.Array): np.Array {
+export function runMLP({ downProj, gateProj, upProj }: Gemma3MLP, x: np.Array): np.Array {
 	return runLinear(downProj, nn.gelu(runLinear(gateProj, x.ref)).mul(runLinear(upProj, x)));
 }
 
