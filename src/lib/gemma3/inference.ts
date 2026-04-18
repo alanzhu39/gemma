@@ -14,6 +14,7 @@ export async function runInference(
 	const tokens = tokenizer.encode(text);
 
 	console.log("Tokenized text");
+	console.log(`Num tokens: ${tokens.length}`);
 
 	// Embed tokens
 	const tokensAr = np.array(tokens, { dtype: np.uint32 });

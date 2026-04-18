@@ -206,6 +206,7 @@ export function runAttention(
 	const S = x.shape[0];
 	const N = kvCache.k.shape[0];
 	const offset = position;
+	const isPrefill = offset === 0;
 
 	let q = runRMSNorm(qNorm, runLinear(qProj, x.ref).reshape([S, NUM_HEADS, HEAD_DIM])); // [S, 4, 256]
 	let k = runRMSNorm(kNorm, runLinear(kProj, x.ref)); // [S, 256]
@@ -218,38 +219,64 @@ export function runAttention(
 	k = applyRoPE(k, cos.slice([offset, offset + S]), sin.slice([offset, offset + S]));
 
 	// Update KV cache
-	const positions = np.arange(N);
-	const writeMask = positions.ref
-		.greaterEqual(offset % N)
-		.mul(positions.less((offset + S) % N))
+	const slotPositions = isSlidingAttention
+		? np
+				.arange(N)
+				.sub((offset + S) % N)
+				.add(N)
+				.mod(N)
+				.add(offset + S - N) // Cache slots mapped to their actual positions
+		: np.arange(N);
+	const writeIndexes = slotPositions.ref.greaterEqual(offset).mul(slotPositions.ref.sub(offset));
+	const writeMask = slotPositions.ref
+		.greaterEqual(offset)
+		.mul(slotPositions.ref.less(offset + S))
 		.reshape([-1, 1]);
-	kvCache.k = np.where(
-		writeMask.ref,
-		np.tile(k, [Math.ceil(N / S), 1]).slice([0, N], []),
-		kvCache.k,
-	);
-	kvCache.v = np.where(writeMask, np.tile(v, [Math.ceil(N / S), 1]).slice([0, N], []), kvCache.v);
+	kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
+	kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
 
-	// [S, 4, 256] * [256, N] -> [4, S, N]
-	let scores = np.einsum("SHD,ND->HSN", q, kvCache.k.ref).mul(1 / 16); // 1 / sqrt(headDim = 256)
-	let mask = np.tri(S, N, offset, { dtype: DType.Bool });
-	if (isSlidingAttention) {
-		// Compute ring buffer mask
-		const sequencePositions = np.arange(offset, offset + S).reshape([S, 1]);
-		const slotPositions = np
-			.arange(N)
-			.sub((offset + S) % N)
-			.add(N)
-			.mod(N)
-			.add(offset + S - N); // Cache slots mapped to their actual positions
-		mask = slotPositions.ref.lessEqual(sequencePositions).mul(slotPositions.greaterEqual(0));
+	if (isPrefill) {
+		// Run with computed values
+		let mask = np.tri(S, S, 0, { dtype: DType.Bool });
+		if (isSlidingAttention) {
+			mask = mask.notEqual(np.tri(S, S, -512));
+		}
+
+		// [S, 4, 256] * [256, N] -> [4, S, N]
+		const scores = np.where(mask, np.einsum("SHD,ND->HSN", q, k).mul(1 / 16), -Infinity); // 1 / sqrt(headDim = 256)
+
+		// [4, S, N] * [N, 256] -> [S, 4, 256]
+		const a = np.einsum("HSN,ND->SHD", nn.softmax(scores), v);
+
+		x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
+	} else {
+		k.dispose();
+		v.dispose();
+
+		// Run with cached values
+		let mask: np.Array;
+		if (isSlidingAttention) {
+			// Compute ring buffer mask
+			const sequencePositions = np.arange(offset, offset + S).reshape([S, 1]);
+			mask = slotPositions.ref.lessEqual(sequencePositions).mul(slotPositions.greaterEqual(0));
+		} else {
+			mask = np.tri(S, N, offset, { dtype: DType.Bool });
+		}
+
+		// [S, 4, 256] * [256, N] -> [4, S, N]
+		const scores = np.where(
+			mask,
+			np.einsum("SHD,ND->HSN", q, kvCache.k.ref).mul(1 / 16),
+			-Infinity,
+		); // 1 / sqrt(headDim = 256)
+
+		// [4, S, N] * [N, 256] -> [S, 4, 256]
+		const a = np.einsum("HSN,ND->SHD", nn.softmax(scores), kvCache.v.ref);
+
+		x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
 	}
-	scores = np.where(mask, scores, -Infinity);
 
-	// [4, S, N] * [N, 256] -> [S, 4, 256]
-	const a = np.einsum("HSN,ND->SHD", nn.softmax(scores), kvCache.v.ref);
-
-	return [runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM])), kvCache];
+	return [x, kvCache];
 }
 
 export type Gemma3MLP = {
