@@ -106,7 +106,7 @@ function test_attention() {
 	const isSlidingAttention = true;
 	const kvCache = emptyKVCache(isSlidingAttention ? 512 : MAX_CONTEXT_LEN, 256);
 	const x = np.ones([999, 640]);
-	console.log(runAttention(weights, kvCache, x, isSlidingAttention)[0].shape);
+	console.log(runAttention(weights, kvCache, x, 0, isSlidingAttention)[0].shape);
 }
 
 // Don't use, way too slow!

@@ -1,5 +1,5 @@
 import { safetensors, WeightMapper } from "@jax-js/loaders";
-import { DType, nn, numpy as np } from "@jax-js/jax";
+import { DType, jit, nn, numpy as np } from "@jax-js/jax";
 
 // Model weight and layer interfaces
 
@@ -33,16 +33,12 @@ export function runRMSNorm({ gamma }: RMSNorm, x: np.Array, eps: number = 1e-6):
 export type KVCache = {
 	k: np.Array; // [max_seq_len, head_dim]
 	v: np.Array; // [max_seq_len, head_dim]
-	// Position might be > capacity, eg. for sliding attention layers we only need 512 slots of lookback.
-	// Cache offset can be calculated as position % capacity.
-	position: number;
 };
 
 export function emptyKVCache(maxSeqLen: number, headDim: number): KVCache {
 	return {
 		k: np.zeros([maxSeqLen, headDim], { dtype: DType.Float16 }),
 		v: np.zeros([maxSeqLen, headDim], { dtype: DType.Float16 }),
-		position: 0,
 	};
 }
 
@@ -54,6 +50,7 @@ const NUM_HEADS = 4;
 
 export type Gemma3State = {
 	kvCaches: KVCache[];
+	position: number;
 };
 
 export function createGemma3State(model: Gemma3): Gemma3State {
@@ -61,6 +58,7 @@ export function createGemma3State(model: Gemma3): Gemma3State {
 		kvCaches: model.layers.map((_, i) =>
 			emptyKVCache(isSlidingAttention(i) ? 512 : MAX_CONTEXT_LEN, 256),
 		),
+		position: 0,
 	};
 }
 
@@ -76,15 +74,24 @@ function isSlidingAttention(i: number): boolean {
 
 export function runGemma3Step(
 	{ tokenEmbed, layers, norm }: Gemma3,
-	{ kvCaches }: Gemma3State,
+	state: Gemma3State,
 	tokensAr: np.Array,
 ): np.Array {
 	// Token embedding weights unused here
 	let x = runGemmaTextScaledWordEmbedding(tokenEmbed, tokensAr);
 
 	for (let i = 0; i < layers.length; i++) {
-		[x, kvCaches[i]] = runDecoderLayer(layers[i], kvCaches[i], x, isSlidingAttention(i));
+		[x, state.kvCaches[i]] = runDecoderLayer(
+			layers[i],
+			state.kvCaches[i],
+			x,
+			state.position,
+			isSlidingAttention(i),
+		);
 	}
+
+	const S = x.shape[0];
+	state.position = state.position + S;
 
 	return runRMSNorm(norm, x);
 }
@@ -106,33 +113,37 @@ export type Gemma3DecoderLayer = {
 	postFeedforwardLayernorm: RMSNorm;
 };
 
-export function runDecoderLayer(
-	{
-		inputLayernorm,
-		selfAttn,
-		postAttentionLayernorm,
-		preFeedforwardLayernorm,
-		mlp,
-		postFeedforwardLayernorm,
-	}: Gemma3DecoderLayer,
-	kvCache: KVCache,
-	x: np.Array,
-	isSlidingAttention: boolean = false,
-): [np.Array, KVCache] {
-	let residual = x.ref;
-	x = runRMSNorm(inputLayernorm, x);
-	[x, kvCache] = runAttention(selfAttn, kvCache, x, isSlidingAttention);
-	x = runRMSNorm(postAttentionLayernorm, x);
-	x = np.clip(x.add(residual), -65504.0, 65504.0);
+export const runDecoderLayer = jit(
+	function runDecoderLayer(
+		{
+			inputLayernorm,
+			selfAttn,
+			postAttentionLayernorm,
+			preFeedforwardLayernorm,
+			mlp,
+			postFeedforwardLayernorm,
+		}: Gemma3DecoderLayer,
+		kvCache: KVCache,
+		x: np.Array,
+		position: number,
+		isSlidingAttention: boolean = false,
+	): [np.Array, KVCache] {
+		let residual = x.ref;
+		x = runRMSNorm(inputLayernorm, x);
+		[x, kvCache] = runAttention(selfAttn, kvCache, x, position, isSlidingAttention);
+		x = runRMSNorm(postAttentionLayernorm, x);
+		x = np.clip(x.add(residual), -65504.0, 65504.0);
 
-	residual = x.ref;
-	x = runRMSNorm(preFeedforwardLayernorm, x);
-	x = runMLP(mlp, x);
-	x = runRMSNorm(postFeedforwardLayernorm, x);
-	x = np.clip(x.add(residual), -65504.0, 65504.0);
+		residual = x.ref;
+		x = runRMSNorm(preFeedforwardLayernorm, x);
+		x = runMLP(mlp, x);
+		x = runRMSNorm(postFeedforwardLayernorm, x);
+		x = np.clip(x.add(residual), -65504.0, 65504.0);
 
-	return [x, kvCache];
-}
+		return [x, kvCache];
+	},
+	{ staticArgnums: [3, 4] },
+);
 
 export type Gemma3Attention = {
 	qProj: Linear; // [1024, 640], no bias
@@ -189,11 +200,12 @@ export function runAttention(
 	{ qProj, kProj, vProj, oProj, kNorm, qNorm }: Gemma3Attention,
 	kvCache: KVCache,
 	x: np.Array, // [S, 640]
+	position: number, // Current position in the sequence
 	isSlidingAttention: boolean = false,
 ): [np.Array, KVCache] {
 	const S = x.shape[0];
 	const N = kvCache.k.shape[0];
-	const offset = kvCache.position;
+	const offset = position;
 
 	let q = runRMSNorm(qNorm, runLinear(qProj, x.ref).reshape([S, NUM_HEADS, HEAD_DIM])); // [S, 4, 256]
 	let k = runRMSNorm(kNorm, runLinear(kProj, x.ref)); // [S, 256]
@@ -217,7 +229,6 @@ export function runAttention(
 		kvCache.k,
 	);
 	kvCache.v = np.where(writeMask, np.tile(v, [Math.ceil(N / S), 1]).slice([0, N], []), kvCache.v);
-	kvCache.position = offset + S;
 
 	// [S, 4, 256] * [256, N] -> [4, S, N]
 	let scores = np.einsum("SHD,ND->HSN", q, kvCache.k.ref).mul(1 / 16); // 1 / sqrt(headDim = 256)
