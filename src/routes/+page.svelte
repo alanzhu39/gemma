@@ -33,7 +33,7 @@
 
 		const tokenizer = await AutoTokenizer.from_pretrained("alanzhu39/gemma-3-270m-it-f16");
 
-		await runInference(weights, tokenizer, text);
+		await runInference(weights, tokenizer, text, 10);
 
 		tree.dispose(weights);
 	}

@@ -30,7 +30,39 @@ export function runRMSNorm({ gamma }: RMSNorm, x: np.Array, eps: number = 1e-6):
 	return x.astype(dtype);
 }
 
+export type KVCache = {
+	k: np.Array; // [max_seq_len, head_dim]
+	v: np.Array; // [max_seq_len, head_dim]
+	// Position might be > capacity, eg. for sliding attention layers we only need 512 slots of lookback.
+	// Cache offset can be calculated as position % capacity.
+	position: number;
+};
+
+export function emptyKVCache(maxSeqLen: number, headDim: number): KVCache {
+	return {
+		k: np.zeros([maxSeqLen, headDim], { dtype: DType.Float16 }),
+		v: np.zeros([maxSeqLen, headDim], { dtype: DType.Float16 }),
+		position: 0,
+	};
+}
+
 // Gemma3 interfaces
+
+export const MAX_CONTEXT_LEN = 32768;
+const HEAD_DIM = 256;
+const NUM_HEADS = 4;
+
+export type Gemma3State = {
+	kvCaches: KVCache[];
+};
+
+export function createGemma3State(model: Gemma3): Gemma3State {
+	return {
+		kvCaches: model.layers.map((_, i) =>
+			emptyKVCache(isSlidingAttention(i) ? 512 : MAX_CONTEXT_LEN, 256),
+		),
+	};
+}
 
 export type Gemma3 = {
 	tokenEmbed: np.Array;
@@ -38,13 +70,20 @@ export type Gemma3 = {
 	norm: RMSNorm;
 };
 
-export function runGemma3Step({ tokenEmbed, layers, norm }: Gemma3, tokensAr: np.Array): np.Array {
+function isSlidingAttention(i: number): boolean {
+	return i != 5 && i != 11 && i != 17;
+}
+
+export function runGemma3Step(
+	{ tokenEmbed, layers, norm }: Gemma3,
+	{ kvCaches }: Gemma3State,
+	tokensAr: np.Array,
+): np.Array {
 	// Token embedding weights unused here
 	let x = runGemmaTextScaledWordEmbedding(tokenEmbed, tokensAr);
 
 	for (let i = 0; i < layers.length; i++) {
-		const isSlidingAttention = i != 5 && i != 11 && i != 17;
-		x = runDecoderLayer(layers[i], x, isSlidingAttention);
+		[x, kvCaches[i]] = runDecoderLayer(layers[i], kvCaches[i], x, isSlidingAttention(i));
 	}
 
 	return runRMSNorm(norm, x);
@@ -76,12 +115,13 @@ export function runDecoderLayer(
 		mlp,
 		postFeedforwardLayernorm,
 	}: Gemma3DecoderLayer,
+	kvCache: KVCache,
 	x: np.Array,
 	isSlidingAttention: boolean = false,
-): np.Array {
+): [np.Array, KVCache] {
 	let residual = x.ref;
 	x = runRMSNorm(inputLayernorm, x);
-	x = runAttention(selfAttn, x, isSlidingAttention);
+	[x, kvCache] = runAttention(selfAttn, kvCache, x, isSlidingAttention);
 	x = runRMSNorm(postAttentionLayernorm, x);
 	x = np.clip(x.add(residual), -65504.0, 65504.0);
 
@@ -91,7 +131,7 @@ export function runDecoderLayer(
 	x = runRMSNorm(postFeedforwardLayernorm, x);
 	x = np.clip(x.add(residual), -65504.0, 65504.0);
 
-	return x;
+	return [x, kvCache];
 }
 
 export type Gemma3Attention = {
@@ -104,7 +144,7 @@ export type Gemma3Attention = {
 };
 
 function precomputeRoPECache(
-	S: number,
+	offset: number,
 	headDim: number,
 	base: number,
 ): {
@@ -115,7 +155,7 @@ function precomputeRoPECache(
 		1,
 		np.pow(base, np.arange(0, headDim, 2, { dtype: DType.Float32 }).div(headDim)),
 	);
-	const positions = np.arange(S);
+	const positions = np.arange(offset);
 
 	let angles = np.outer(positions, invFreq);
 	angles = np.concatenate([angles.ref, angles], -1);
@@ -147,39 +187,58 @@ function applyRoPE(x: np.Array, cos: np.Array, sin: np.Array) {
 
 export function runAttention(
 	{ qProj, kProj, vProj, oProj, kNorm, qNorm }: Gemma3Attention,
+	kvCache: KVCache,
 	x: np.Array, // [S, 640]
 	isSlidingAttention: boolean = false,
-): np.Array {
-	// TODO: KV-cache
+): [np.Array, KVCache] {
 	const S = x.shape[0];
-	const numHeads = 4;
-	const headDim = 256;
+	const N = kvCache.k.shape[0];
+	const offset = kvCache.position;
 
-	let q = runLinear(qProj, x.ref); // [S, 1024]
-	q = runRMSNorm(qNorm, q.reshape([S, numHeads, headDim])); // [S, 4, 256]
-
-	let k = runLinear(kProj, x.ref); // [S, 256]
-	k = runRMSNorm(kNorm, k); // [S, 256]
-
-	const base = isSlidingAttention ? 10000 : 1000000;
-	const { cos, sin } = precomputeRoPECache(S, headDim, base);
-	q = applyRoPE(q, cos.ref, sin.ref);
-	k = applyRoPE(k, cos, sin);
-
+	let q = runRMSNorm(qNorm, runLinear(qProj, x.ref).reshape([S, NUM_HEADS, HEAD_DIM])); // [S, 4, 256]
+	let k = runRMSNorm(kNorm, runLinear(kProj, x.ref)); // [S, 256]
 	const v = runLinear(vProj, x); // [S, 256]
 
-	// [S, 4, 256] * [256, S] -> [4, S, S]
-	let scores = np.einsum("qhd,kd->hqk", q, k).mul(1 / 16); // 1 / sqrt(d_k = 256)
-	let mask = np.tri(S, S, 0, { dtype: DType.Bool });
+	// Apply RoPE
+	const base = isSlidingAttention ? 10000 : 1000000;
+	const { cos, sin } = precomputeRoPECache(offset + S, HEAD_DIM, base);
+	q = applyRoPE(q, cos.ref.slice([offset, offset + S]), sin.ref.slice([offset, offset + S]));
+	k = applyRoPE(k, cos.slice([offset, offset + S]), sin.slice([offset, offset + S]));
+
+	// Update KV cache
+	const positions = np.arange(N);
+	const writeMask = positions.ref
+		.greaterEqual(offset % N)
+		.mul(positions.less((offset + S) % N))
+		.reshape([-1, 1]);
+	kvCache.k = np.where(
+		writeMask.ref,
+		np.tile(k, [Math.ceil(N / S), 1]).slice([0, N], []),
+		kvCache.k,
+	);
+	kvCache.v = np.where(writeMask, np.tile(v, [Math.ceil(N / S), 1]).slice([0, N], []), kvCache.v);
+	kvCache.position = offset + S;
+
+	// [S, 4, 256] * [256, N] -> [4, S, N]
+	let scores = np.einsum("SHD,ND->HSN", q, kvCache.k.ref).mul(1 / 16); // 1 / sqrt(headDim = 256)
+	let mask = np.tri(S, N, offset, { dtype: DType.Bool });
 	if (isSlidingAttention) {
-		mask = np.notEqual(mask, np.tri(S, S, -512, { dtype: DType.Bool }));
+		// Compute ring buffer mask
+		const sequencePositions = np.arange(offset, offset + S).reshape([S, 1]);
+		const slotPositions = np
+			.arange(N)
+			.sub((offset + S) % N)
+			.add(N)
+			.mod(N)
+			.add(offset + S - N); // Cache slots mapped to their actual positions
+		mask = slotPositions.ref.lessEqual(sequencePositions).mul(slotPositions.greaterEqual(0));
 	}
 	scores = np.where(mask, scores, -Infinity);
 
-	// [4, S, S] * [S, 256] -> [S, 4, 256]
-	const a = np.einsum("hqs,sv->qhv", nn.softmax(scores), v);
+	// [4, S, N] * [N, 256] -> [S, 4, 256]
+	const a = np.einsum("HSN,ND->SHD", nn.softmax(scores), kvCache.v.ref);
 
-	return runLinear(oProj, a.reshape([S, numHeads * headDim]));
+	return [runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM])), kvCache];
 }
 
 export type Gemma3MLP = {

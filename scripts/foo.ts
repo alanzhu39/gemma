@@ -1,8 +1,10 @@
 import { safetensors, tokenizers, WeightMapper } from "@jax-js/loaders";
-import { defaultDevice, DType, init, numpy as np, tree } from "@jax-js/jax";
+import { defaultDevice, init, numpy as np, tree } from "@jax-js/jax";
 import { readFileSync } from "node:fs";
 import {
+	emptyKVCache,
 	fromSafetensors,
+	MAX_CONTEXT_LEN,
 	runAttention,
 	type Gemma3,
 	type Gemma3Attention,
@@ -64,9 +66,28 @@ function test_dot() {
 }
 
 function test_mask() {
-	const a = np.tri(5, 5, 0, { dtype: DType.Bool });
-	const b = np.tri(5, 5, -2, { dtype: DType.Bool });
-	console.log(np.notEqual(a, b).js());
+	const offset = 1;
+	const S = 2;
+	const N = 4;
+	const mask = np
+		.arange(N)
+		.sub((offset + S) % N)
+		.add(N)
+		.mod(N)
+		.add(offset + S - N);
+	// console.log(mask.js());
+	const sequencePositions = np.arange(offset, offset + S).reshape([S, 1]);
+	const slotPositions = np
+		.arange(N)
+		.sub((offset + S) % N)
+		.add(N)
+		.mod(N)
+		.add(offset + S - N); // Cache slots mapped to their actual positions
+	console.log(sequencePositions.ref.js());
+	console.log(slotPositions.ref.js());
+	console.log(
+		slotPositions.ref.lessEqual(sequencePositions).mul(slotPositions.greaterEqual(0)).js(),
+	);
 }
 
 function test_rotate_half() {
@@ -82,8 +103,10 @@ function test_attention() {
 		qNorm: { gamma: np.ones([256]) },
 		kNorm: { gamma: np.ones([256]) },
 	};
+	const isSlidingAttention = true;
+	const kvCache = emptyKVCache(isSlidingAttention ? 512 : MAX_CONTEXT_LEN, 256);
 	const x = np.ones([999, 640]);
-	console.log(runAttention(weights, x, true).shape);
+	console.log(runAttention(weights, kvCache, x, isSlidingAttention)[0].shape);
 }
 
 // Don't use, way too slow!
@@ -115,4 +138,16 @@ function test_modules() {
 	console.log(weights.layers[0].inputLayernorm.gamma.js());
 }
 
-test_modules();
+function test_reshape() {
+	const positions = np.arange(10).reshape([-1, 1]);
+	// console.log(positions.js());
+
+	// const x = np.arange(10).reshape([1, 10]);
+	// const y = np.tile(x, [3, 1]);
+	// console.log(y.js());
+
+	const x = np.arange(10).sub(np.arange(5).reshape([5, 1]));
+	console.log(x.js());
+}
+
+test_mask();
