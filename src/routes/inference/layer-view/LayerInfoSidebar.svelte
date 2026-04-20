@@ -1,9 +1,8 @@
 <script lang="ts">
-	type Props = {
-		selectedLayer: number;
-	};
+	import { getInferenceContext } from "../context";
 
-	let { selectedLayer }: Props = $props();
+	const inferenceContext = getInferenceContext();
+	const selectedLayer = $derived(inferenceContext.selectedLayer);
 </script>
 
 <div

@@ -51,14 +51,18 @@ const NUM_HEADS = 4;
 export type Gemma3State = {
 	kvCaches: KVCache[];
 	position: number;
+	collectWeights: boolean;
+	attentionWeights?: np.Array[];
 };
 
-export function createGemma3State(model: Gemma3): Gemma3State {
+export function createGemma3State(model: Gemma3, collectWeights = false): Gemma3State {
 	return {
 		kvCaches: model.layers.map((_, i) =>
 			emptyKVCache(isSlidingAttention(i) ? 512 : MAX_CONTEXT_LEN, 256),
 		),
 		position: 0,
+		collectWeights,
+		...(collectWeights ? { attentionWeights: [] } : {}),
 	};
 }
 
@@ -81,13 +85,19 @@ export function runGemma3Step(
 	let x = runGemmaTextScaledWordEmbedding(tokenEmbed, tokensAr);
 
 	for (let i = 0; i < layers.length; i++) {
-		[x, state.kvCaches[i]] = runDecoderLayer(
+		const out = runDecoderLayer(
 			layers[i],
 			state.kvCaches[i],
 			x,
 			state.position,
 			isSlidingAttention(i),
+			state.collectWeights,
 		);
+		x = out[0];
+		state.kvCaches[i] = out[1];
+		if (state.collectWeights) {
+			state.attentionWeights!.push(out[2]!);
+		}
 	}
 
 	const S = x.shape[0];
@@ -127,10 +137,12 @@ export const runDecoderLayer = jit(
 		x: np.Array,
 		position: number,
 		isSlidingAttention: boolean = false,
-	): [np.Array, KVCache] {
+		collectWeights: boolean = false,
+	): [np.Array, KVCache] | [np.Array, KVCache, np.Array] {
 		let residual = x.ref;
 		x = runRMSNorm(inputLayernorm, x);
-		[x, kvCache] = runAttention(selfAttn, kvCache, x, position, isSlidingAttention);
+		const out = runAttention(selfAttn, kvCache, x, position, isSlidingAttention, collectWeights);
+		x = out[0];
 		x = runRMSNorm(postAttentionLayernorm, x);
 		x = np.clip(x.add(residual), -65504.0, 65504.0);
 
@@ -140,9 +152,14 @@ export const runDecoderLayer = jit(
 		x = runRMSNorm(postFeedforwardLayernorm, x);
 		x = np.clip(x.add(residual), -65504.0, 65504.0);
 
-		return [x, kvCache];
+		if (collectWeights) {
+			// Must have scores collected from attention
+			return [x, out[1], out[2]!];
+		}
+
+		return [x, out[1]];
 	},
-	{ staticArgnums: [3, 4] },
+	{ staticArgnums: [3, 4, 5] },
 );
 
 export type Gemma3Attention = {
@@ -202,7 +219,8 @@ export function runAttention(
 	x: np.Array, // [S, 640]
 	position: number, // Current position in the sequence
 	isSlidingAttention: boolean = false,
-): [np.Array, KVCache] {
+	collectWeights: boolean = false,
+): [np.Array, KVCache] | [np.Array, KVCache, np.Array] {
 	const S = x.shape[0];
 	const N = kvCache.k.shape[0];
 	const offset = position;
@@ -235,6 +253,7 @@ export function runAttention(
 	kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
 	kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
 
+	let scores: np.Array;
 	if (isPrefill) {
 		// Run with computed values
 		let mask = np.tri(S, S, 0, { dtype: DType.Bool });
@@ -243,10 +262,10 @@ export function runAttention(
 		}
 
 		// [S, 4, 256] * [256, N] -> [4, S, N]
-		const scores = np.where(mask, np.einsum("SHD,ND->HSN", q, k).mul(1 / 16), -Infinity); // 1 / sqrt(headDim = 256)
+		scores = np.where(mask, np.einsum("SHD,ND->HSN", q, k).mul(1 / 16), -Infinity); // 1 / sqrt(headDim = 256)
 
 		// [4, S, N] * [N, 256] -> [S, 4, 256]
-		const a = np.einsum("HSN,ND->SHD", nn.softmax(scores), v);
+		const a = np.einsum("HSN,ND->SHD", nn.softmax(scores.ref), v);
 
 		x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
 	} else {
@@ -264,17 +283,19 @@ export function runAttention(
 		}
 
 		// [S, 4, 256] * [256, N] -> [4, S, N]
-		const scores = np.where(
-			mask,
-			np.einsum("SHD,ND->HSN", q, kvCache.k.ref).mul(1 / 16),
-			-Infinity,
-		); // 1 / sqrt(headDim = 256)
+		scores = np.where(mask, np.einsum("SHD,ND->HSN", q, kvCache.k.ref).mul(1 / 16), -Infinity); // 1 / sqrt(headDim = 256)
 
 		// [4, S, N] * [N, 256] -> [S, 4, 256]
-		const a = np.einsum("HSN,ND->SHD", nn.softmax(scores), kvCache.v.ref);
+		const a = np.einsum("HSN,ND->SHD", nn.softmax(scores.ref), kvCache.v.ref);
 
 		x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
 	}
+
+	if (collectWeights) {
+		return [x, kvCache, scores.slice([], [], [0, S])];
+	}
+
+	scores.dispose();
 
 	return [x, kvCache];
 }

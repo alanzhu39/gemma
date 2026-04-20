@@ -17,24 +17,25 @@
 	};
 
 	const NUM_LAYERS = 18;
-	let selectedLayer = $state<number | null>(null);
-	function setSelectedLayer(layer: number) {
-		if (layer === selectedLayer) {
-			selectedLayer = null;
-		} else {
-			selectedLayer = layer;
-		}
-	}
 
 	const inferenceContext = $state<InferenceContext>({
 		tokens: [],
 		attentionWeights: [],
+		selectedLayer: null,
 	});
 	setInferenceContext(inferenceContext);
+	const selectedLayer = $derived(inferenceContext.selectedLayer);
+
+	function setSelectedLayer(layer: number) {
+		if (layer === selectedLayer) {
+			inferenceContext.selectedLayer = null;
+		} else {
+			inferenceContext.selectedLayer = layer;
+		}
+	}
 
 	let context = $state("The capital of France is");
 	let isRunning = $state(false);
-	$inspect(isRunning);
 
 	let model = $state<Gemma3 | null>(null);
 	let tokenizer = $state<PreTrainedTokenizer | null>(null);
@@ -70,10 +71,11 @@
 		const model = await getModel();
 		const tokenizer = await getTokenizer();
 
-		const tokensAr = generateOnce(model, tokenizer, context);
-		inferenceContext.tokens = tokensAr.flatMap((token) => tokenizer.decode([token]));
+		const [tokensAr, attentionWeights] = generateOnce(model, tokenizer, context);
 		context = tokenizer.decode(tokensAr, { skip_special_tokens: true });
 		isRunning = false;
+		inferenceContext.tokens = tokensAr.flatMap((token) => tokenizer.decode([token]));
+		inferenceContext.attentionWeights = attentionWeights;
 	}
 </script>
 
@@ -93,7 +95,7 @@
 
 	<!-- Main visualization area -->
 	{#if selectedLayer !== null}
-		<LayerView {selectedLayer} />
+		<LayerView />
 	{:else}
 		<LayerPlaceholder />
 	{/if}

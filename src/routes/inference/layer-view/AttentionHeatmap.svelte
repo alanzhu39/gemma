@@ -5,7 +5,15 @@
 
 	const inferenceContext = getInferenceContext();
 	const tokens = $derived(inferenceContext.tokens);
-	const attentionWeights = $derived(inferenceContext.attentionWeights);
+	const selectedLayer = $derived(inferenceContext.selectedLayer);
+
+	// TODO: head selection
+	const selectedHead = $state(0);
+
+	// Must have selected layer
+	const attentionWeights = $derived(
+		inferenceContext.attentionWeights[selectedLayer!][selectedHead],
+	);
 
 	function cellColor(value: number): string {
 		const clamped = Math.max(0, Math.min(1, value));
