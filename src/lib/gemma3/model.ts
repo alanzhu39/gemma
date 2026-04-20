@@ -68,7 +68,7 @@ export type Gemma3 = {
 	norm: RMSNorm;
 };
 
-function isSlidingAttention(i: number): boolean {
+export function isSlidingAttention(i: number): boolean {
 	return i != 5 && i != 11 && i != 17;
 }
 
