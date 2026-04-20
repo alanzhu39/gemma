@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { runInference } from "$lib/gemma3/inference";
+	import { generateOnce } from "$lib/gemma3/inference";
 	import { fromSafetensors, type Gemma3 } from "$lib/gemma3/model";
-	import { AutoTokenizer } from "@huggingface/transformers";
-	import { defaultDevice, init, tree } from "@jax-js/jax";
+	import { AutoTokenizer, PreTrainedTokenizer } from "@huggingface/transformers";
+	import { defaultDevice, init } from "@jax-js/jax";
 	import { cachedFetch, safetensors } from "@jax-js/loaders";
 	import AttentionByToken from "./AttentionByToken.svelte";
 	import Layers from "./Layers.svelte";
@@ -30,62 +30,51 @@
 		tokens: [],
 		attentionWeights: [],
 	});
-	const tokens = $derived(inferenceContext.tokens);
 	setInferenceContext(inferenceContext);
 
 	let context = $state("The capital of France is");
-	let downloadProgress = $state<number | null>(null);
 	let isRunning = $state(false);
-	let isReady = $state(false);
+	$inspect(isRunning);
 
-	// Placeholder data shapes for visualization (replaced by real data when run)
-	let attentionWeights = $state<number[][]>([]);
-	let activations = $state<number[][]>([]);
+	let model = $state<Gemma3 | null>(null);
+	let tokenizer = $state<PreTrainedTokenizer | null>(null);
+
+	async function getModel(): Promise<Gemma3> {
+		if (model === null) {
+			const weightsUrl =
+				"https://huggingface.co/alanzhu39/gemma-3-270m-it-f16/resolve/main/model.safetensors";
+			const data = await cachedFetch(weightsUrl, {});
+			const file = safetensors.parse(data);
+			model = fromSafetensors(file);
+		}
+		return model;
+	}
+
+	async function getTokenizer(): Promise<PreTrainedTokenizer> {
+		if (tokenizer === null) {
+			tokenizer = await AutoTokenizer.from_pretrained("alanzhu39/gemma-3-270m-it-f16");
+		}
+		return tokenizer;
+	}
 
 	async function run() {
 		isRunning = true;
 		const devices = await init("webgpu");
 		if (!devices.includes("webgpu")) {
 			alert("WebGPU required but not available!");
-			isRunning = false;
 			return;
 		}
+
 		defaultDevice("webgpu");
 
-		const weightsUrl =
-			"https://huggingface.co/alanzhu39/gemma-3-270m-it-f16/resolve/main/model.safetensors";
-		const data = await cachedFetch(weightsUrl, {}, (progress) => {
-			downloadProgress = progress.totalBytes
-				? Math.round((progress.loadedBytes / progress.totalBytes) * 100)
-				: null;
-		});
-		const file = safetensors.parse(data);
-		const weights: Gemma3 = fromSafetensors(file);
-		const tokenizer = await AutoTokenizer.from_pretrained("alanzhu39/gemma-3-270m-it-f16");
+		const model = await getModel();
+		const tokenizer = await getTokenizer();
 
-		await runInference(weights, tokenizer, context, 1);
-
-		tree.dispose(weights);
+		const tokensAr = generateOnce(model, tokenizer, context);
+		inferenceContext.tokens = tokensAr.flatMap((token) => tokenizer.decode([token]));
+		context = tokenizer.decode(tokensAr, { skip_special_tokens: true });
 		isRunning = false;
-		isReady = true;
 	}
-
-	// Demo placeholder tokens and data for layout preview
-	const demoTokens = ["The", "▁capital", "▁of", "▁France", "▁is", "▁Paris"];
-	const demoAttention = demoTokens.map((_, i) =>
-		demoTokens.map((_, j) => (j <= i ? Math.random() : 0)),
-	);
-	const demoActivations = Array.from({ length: 18 }, () =>
-		Array.from({ length: 32 }, () => Math.random() * 2 - 1),
-	);
-
-	$effect(() => {
-		if (!isReady && tokens.length === 0) {
-			inferenceContext.tokens = demoTokens;
-			attentionWeights = demoAttention;
-			activations = demoActivations;
-		}
-	});
 </script>
 
 <svelte:head>
@@ -120,6 +109,7 @@
 				Context
 			</span>
 		</div>
+		<!-- TODO: animate new tokens -->
 		<textarea
 			bind:value={context}
 			rows={5}
@@ -136,6 +126,7 @@
 				<button
 					onclick={run}
 					disabled={isRunning}
+					// TODO: disabled color
 					class="w-full rounded-lg px-4 py-2 text-sm font-semibold transition-all"
 					style="
               padding: 5px 16px; border-radius: 6px; font-size: 12px; font-family: &quot;Plus Jakarta Sans&quot;, sans-serif;
@@ -144,8 +135,7 @@
             "
 				>
 					{#if isRunning}
-						<!-- TODO: download modal -->
-						<span style="font-family: {fonts.mono};">running…</span>
+						Running...
 					{:else}
 						Generate next →
 					{/if}

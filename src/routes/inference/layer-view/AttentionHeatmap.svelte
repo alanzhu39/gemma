@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { stringify } from "$lib/util";
 	import { getInferenceContext } from "../context";
 	import AttentionByHead from "./AttentionByHead.svelte";
 
@@ -54,7 +55,7 @@
 									"
 							title={token}
 						>
-							{token}
+							{stringify(token)}
 						</div>
 					{/each}
 				</div>
@@ -67,7 +68,7 @@
 							style="width: 64px; font-family: monospace; font-size: 10px; color: #6b6560;"
 							title={rowToken}
 						>
-							{rowToken.length > 7 ? rowToken.slice(0, 6) + "…" : rowToken}
+							{rowToken.length > 15 ? rowToken.slice(0, 14) + "…" : stringify(rowToken)}
 						</div>
 						{#each tokens as colToken, col (col)}
 							<div
