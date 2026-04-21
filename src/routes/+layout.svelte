@@ -124,14 +124,13 @@
 			padding-left: 12px;
 
 			.tab {
+				@include transition-all;
+
 				display: flex;
 				align-items: center;
 				gap: 6px;
 				padding-inline: 20px;
 				text-decoration-line: none;
-				transition-property: all;
-				transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-				transition-duration: 150ms;
 				border-bottom: 2px solid transparent;
 
 				&.active {

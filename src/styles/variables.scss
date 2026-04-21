@@ -22,8 +22,17 @@ $text-gray: rgb(160, 152, 144);
 $text-light-gray: rgb(232, 227, 221);
 
 $background-white: rgb(255, 255, 255);
+$text-white: rgb(255, 255, 255);
 
 $text-black: rgb(28, 25, 23);
 
 $accent-terra: oklch(0.55 0.14 32);
+$shadow-accent-terra: oklch(0.55 0.14 32 / 0.2);
 $accent-green: oklch(0.5 0.14 142);
+
+// Mixins
+@mixin transition-all {
+  transition-property: all;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}

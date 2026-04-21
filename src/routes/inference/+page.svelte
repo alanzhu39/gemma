@@ -92,41 +92,17 @@
 	{/if}
 
 	<!-- Context -->
-	<div
-		style="border-top: 1.5px solid rgb(232, 227, 221); background: rgb(255, 255, 255); padding: 12px 20px; flex-shrink: 0;"
-	>
-		<div style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px;">
-			<span
-				style="font-size: 13px; font-weight: 600; color: rgb(28, 25, 23); font-family: &quot;Plus Jakarta Sans&quot;, sans-serif;"
-			>
-				Context
-			</span>
+	<div class="context">
+		<div class="header">
+			<span class="title"> Context </span>
 		</div>
 		<!-- TODO: animate new tokens -->
-		<textarea
-			bind:value={context}
-			rows={5}
-			style="
-        width: 100%; resize: none; border: 1.5px solid rgb(232, 227, 221); border-radius: 7px; padding: 8px 12px;
-        font-size: 13px; font-family: &quot;IBM Plex Mono&quot;, monospace; color: rgb(28, 25, 23); background: rgb(250, 249, 247);
-        outline: none; line-height: 1.6; transition: border-color 0.15s; margin-bottom: 8px;
-      "
-			placeholder="Enter a prompt…"
+		<textarea bind:value={context} rows={5} class="text-input" placeholder="Enter a prompt…"
 		></textarea>
-		<div style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px;">
+		<div class="actions">
 			<AttentionByToken />
-			<div style="margin-left: auto; display: flex; gap: 7px;">
-				<button
-					onclick={run}
-					disabled={isRunning}
-					// TODO: disabled color
-					class="w-full rounded-lg px-4 py-2 text-sm font-semibold transition-all"
-					style="
-              padding: 5px 16px; border-radius: 6px; font-size: 12px; font-family: &quot;Plus Jakarta Sans&quot;, sans-serif;
-              font-weight: 600; cursor: pointer; background: oklch(0.55 0.14 32); border: 1.5px solid oklch(0.55 0.14 32);
-              color: rgb(255, 255, 255); box-shadow: oklch(0.55 0.14 32 / 0.2) 0px 2px 8px; transition: 0.12s;
-            "
-				>
+			<div class="generate">
+				<button onclick={run} disabled={isRunning} class="run-button">
 					{#if isRunning}
 						Running...
 					{:else}
@@ -145,7 +121,79 @@
 		height: 100%;
 		min-width: 100%;
 		overflow: hidden;
-		background: #faf9f7;
+		background: $background-gray;
 		font-family: $font-sans;
+
+		.context {
+			border-top: 1.5px solid $border-gray;
+			background: $background-white;
+			padding: 12px 20px;
+			flex-shrink: 0;
+
+			.header {
+				display: flex;
+				gap: 8px;
+				align-items: center;
+				margin-bottom: 10px;
+
+				.title {
+					font-size: 13px;
+					font-weight: 600;
+					color: $text-black;
+					font-family: $font-sans;
+				}
+			}
+
+			.text-input {
+				width: 100%;
+				resize: none;
+				border: 1.5px solid $border-gray;
+				border-radius: 7px;
+				padding: 8px 12px;
+				font-size: 13px;
+				font-family: $font-mono;
+				color: $text-black;
+				background: $background-gray;
+				outline: none;
+				line-height: 1.6;
+				transition: border-color 0.15s;
+				margin-bottom: 8px;
+			}
+
+			.actions {
+				display: flex;
+				gap: 8px;
+				align-items: center;
+				margin-bottom: 10px;
+
+				.generate {
+					margin-left: auto;
+					display: flex;
+					gap: 7px;
+
+					.run-button {
+						@include transition-all;
+
+						width: 100%;
+						border-radius: 8px;
+						padding: 8px 16px;
+						font-size: 14px;
+						line-height: 1.42;
+						font-weight: 600;
+						padding: 5px 16px;
+						border-radius: 6px;
+						font-size: 12px;
+						font-family: $font-sans;
+						font-weight: 600;
+						cursor: pointer;
+						background: $accent-terra;
+						border: 1.5px solid $accent-terra;
+						color: $text-white;
+						box-shadow: $shadow-accent-terra 0px 2px 8px;
+						transition: 0.12s;
+					}
+				}
+			}
+		}
 	}
 </style>
