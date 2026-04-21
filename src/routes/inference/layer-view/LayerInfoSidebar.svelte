@@ -5,6 +5,9 @@
 	const inferenceContext = getInferenceContext();
 	const selectedLayer = $derived(inferenceContext.selectedLayer);
 	const isSWA = $derived(isSlidingAttention(selectedLayer!));
+
+	// TODO: head selection
+	const selectedHead = 0;
 </script>
 
 <div class="container">
@@ -12,7 +15,7 @@
 		<span class="title">
 			Layer {selectedLayer}
 		</span>
-		<span class="label">
+		<span class={`label ${isSWA ? "swa" : "gqa"}`}>
 			{#if isSWA}
 				SWA
 			{:else}
@@ -37,18 +40,11 @@
 		{@render info("Sliding window size", "512")}
 	{/if}
 
-	<div style="margin-top: 14px; margin-bottom: 8px;">
-		<div
-			style="font-size: 10px; color: rgb(160, 152, 144); font-family: &quot;IBM Plex Mono&quot;, monospace; margin-bottom: 6px;"
-		>
-			ATTENTION HEAD
-		</div>
-		<div style="display: flex; flex-wrap: wrap; gap: 4px;">
+	<div class="heads-container">
+		<div class="title">ATTENTION HEAD</div>
+		<div class="heads">
 			{#each { length: NUM_HEADS }, i}
-				<button
-					// style="width: 28px; height: 26px; border-radius: 5px; font-size: 11px; padding: 0px; font-family: &quot;IBM Plex Mono&quot;, monospace; cursor: pointer; background: oklch(0.96 0.04 32); border: 1.5px solid oklch(0.82 0.1 32); color: oklch(0.55 0.14 32); font-weight: 600; transition: 0.1s;"
-					style="width: 28px; height: 26px; border-radius: 5px; font-size: 11px; padding: 0px; font-family: &quot;IBM Plex Mono&quot;, monospace; cursor: pointer; background: rgb(250, 249, 247); border: 1.5px solid rgb(232, 227, 221); color: rgb(107, 101, 96); font-weight: 400; transition: 0.1s;"
-				>
+				<button class={`head-button ${selectedHead === i ? "selected" : ""}`}>
 					{i}
 				</button>
 			{/each}
@@ -59,11 +55,11 @@
 <style lang="scss">
 	.container {
 		width: 220px;
-		border-right: 1.5px solid rgb(232, 227, 221);
+		border-right: 1.5px solid $border-gray;
 		padding: 16px;
 		overflow: auto;
 		flex-shrink: 0;
-		background: rgb(255, 255, 255);
+		background: $background-white;
 
 		.header {
 			display: flex;
@@ -74,7 +70,7 @@
 			.title {
 				font-size: 15px;
 				font-weight: 600;
-				color: rgb(28, 25, 23);
+				color: $text-black;
 				font-family: $font-sans;
 			}
 
@@ -84,9 +80,18 @@
 				font-size: 10px;
 				font-family: $font-mono;
 				font-weight: 600;
-				background: oklch(0.96 0.04 32);
-				color: oklch(0.55 0.14 32);
-				border: 1px solid oklch(0.82 0.1 32);
+
+				&.swa {
+					color: $text-red;
+					border: 1px solid $border-red;
+					background: $background-red;
+				}
+
+				&.gqa {
+					color: $text-blue;
+					border: 1px solid $border-blue;
+					background: $background-blue;
+				}
 			}
 		}
 
@@ -94,16 +99,56 @@
 			display: flex;
 			justify-content: space-between;
 			padding: 5px 0px;
-			border-bottom: 1px solid rgb(232, 227, 221);
+			border-bottom: 1px solid $border-gray;
 			font-size: 11px;
 			font-family: $font-mono;
 
 			.label {
-				color: rgb(160, 152, 144);
+				color: $text-gray;
 			}
 
 			.value {
-				color: rgb(28, 25, 23);
+				color: $text-black;
+			}
+		}
+
+		.heads-container {
+			margin-top: 14px;
+			margin-bottom: 8px;
+
+			.title {
+				font-size: 10px;
+				color: rgb(160, 152, 144);
+				font-family: $font-mono;
+				margin-bottom: 6px;
+			}
+
+			.heads {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 4px;
+
+				.head-button {
+					width: 28px;
+					height: 26px;
+					border-radius: 5px;
+					font-size: 11px;
+					padding: 0px;
+					font-family: $font-mono;
+					cursor: pointer;
+					background: $backgroud-gray;
+					border: 1.5px solid $border-gray;
+					color: $text-dark-gray;
+					font-weight: 400;
+					transition: 0.1s;
+
+					&.selected {
+						background: $background-red;
+						border: 1.5px solid $border-red;
+						color: $text-red;
+						font-weight: 600;
+					}
+				}
 			}
 		}
 	}

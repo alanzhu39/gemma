@@ -10,12 +10,6 @@
 	import LayerPlaceholder from "./layer-view/LayerPlaceholder.svelte";
 	import { setInferenceContext, type InferenceContext } from "./context";
 
-	// Font configuration — swap these to change the UI typeface
-	const fonts = {
-		sans: "'Plus Jakarta Sans', sans-serif",
-		mono: "'IBM Plex Mono', monospace",
-	};
-
 	const NUM_LAYERS = 18;
 
 	const inferenceContext = $state<InferenceContext>({
@@ -86,10 +80,7 @@
 	/>
 </svelte:head>
 
-<div
-	class="flex h-full flex-col overflow-hidden"
-	style="background: #faf9f7; font-family: {fonts.sans};"
->
+<div class="container">
 	<!-- Layers -->
 	<Layers numLayers={NUM_LAYERS} {setSelectedLayer} />
 
@@ -146,3 +137,15 @@
 		</div>
 	</div>
 </div>
+
+<style lang="scss">
+	.container {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		min-width: 100%;
+		overflow: hidden;
+		background: #faf9f7;
+		font-family: $font-sans;
+	}
+</style>

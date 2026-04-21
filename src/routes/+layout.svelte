@@ -105,14 +105,15 @@
 </header>
 
 <!-- Page content -->
-<main class="flex-1 overflow-hidden" style="display: flex; flex-direction: column;">
+<main class="main">
 	{@render children()}
 </main>
 
-<style>
+<style lang="scss">
 	:global(*, *::before, *::after) {
 		box-sizing: border-box;
 	}
+
 	:global(body) {
 		margin: 0;
 		padding: 0;
@@ -123,5 +124,10 @@
 		overflow: hidden;
 		background: #faf9f7;
 		color: #1c1917;
+	}
+
+	.main {
+		flex: 1;
+		overflow: hidden;
 	}
 </style>
