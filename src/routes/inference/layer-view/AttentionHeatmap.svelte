@@ -47,7 +47,7 @@
 			<div class="inline-block">
 				<!-- Column labels -->
 				<div class="flex" style="padding-left: 64px; margin-bottom: 2px;">
-					{#each tokens as token, i (i)}
+					{#each tokens.slice(0, -1) as token, i (i)}
 						<div
 							class="truncate text-center"
 							style="
@@ -69,7 +69,7 @@
 				</div>
 
 				<!-- Rows with row label -->
-				{#each tokens as rowToken, row (row)}
+				{#each tokens.slice(1) as rowToken, row (row)}
 					<div class="mb-0.5 flex items-center">
 						<div
 							class="shrink-0 pr-2 text-right"

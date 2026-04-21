@@ -46,7 +46,7 @@ export function emptyKVCache(maxSeqLen: number, headDim: number): KVCache {
 
 export const MAX_CONTEXT_LEN = 32768;
 const HEAD_DIM = 256;
-const NUM_HEADS = 4;
+export const NUM_HEADS = 4;
 
 export type Gemma3State = {
 	kvCaches: KVCache[];
