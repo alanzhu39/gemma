@@ -124,21 +124,4 @@
 		background: #faf9f7;
 		color: #1c1917;
 	}
-	:global(::-webkit-scrollbar) {
-		width: 6px;
-		height: 6px;
-	}
-	:global(::-webkit-scrollbar-track) {
-		background: transparent;
-	}
-	:global(::-webkit-scrollbar-thumb) {
-		background: #d8d2cc;
-		border-radius: 3px;
-	}
-	:global(::-webkit-scrollbar-thumb:hover) {
-		background: #bfb8b0;
-	}
-	:global(a) {
-		text-decoration: none;
-	}
 </style>
