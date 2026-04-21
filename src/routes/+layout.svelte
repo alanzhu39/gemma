@@ -3,6 +3,7 @@
 	import favicon from "$lib/assets/favicon.svg";
 	import { resolve } from "$app/paths";
 	import { page } from "$app/state";
+	import { init } from "@jax-js/jax";
 
 	const TABS = [
 		{
@@ -21,6 +22,19 @@
 	let { children } = $props();
 
 	let activeTab = $derived(TABS.find((t) => page.url.pathname.startsWith(t.href))?.id ?? "");
+
+	let webGPUStatus: "loading" | "ready" | "error" = $state("loading");
+
+	async function initWebGPU() {
+		const devices = await init("webgpu");
+		if (!devices.includes("webgpu")) {
+			webGPUStatus = "error";
+		} else {
+			webGPUStatus = "ready";
+		}
+	}
+
+	initWebGPU();
 </script>
 
 <svelte:head>
@@ -39,7 +53,7 @@
 			<a href={resolve("/")}> ◈ gemma </a>
 		</span>
 		<span class="webgpu"> WebGPU </span>
-		<span class="status">● ready</span>
+		<span class={`status ${webGPUStatus}`}>● {webGPUStatus}</span>
 	</div>
 
 	<!-- Tabs -->
@@ -112,8 +126,19 @@
 			}
 
 			.status {
-				color: $accent-green;
 				font-size: 10px;
+
+				&.loading {
+					color: $text-blue;
+				}
+
+				&.error {
+					color: $text-red;
+				}
+
+				&.ready {
+					color: $accent-green;
+				}
 			}
 		}
 
