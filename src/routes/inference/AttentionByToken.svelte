@@ -1,84 +1,96 @@
 <script lang="ts">
-	function activationColor(value: number): string {
-		if (value >= 0) {
-			const alpha = Math.round(Math.min(value, 1) * 100);
-			return `oklch(0.50 0.12 195 / ${alpha}%)`;
+	import { NUM_HEADS, NUM_LAYERS } from "$lib/gemma3/model";
+	import { clamp, stringify } from "$lib/util";
+	import { getInferenceContext } from "./context";
+
+	const inferenceContext = getInferenceContext();
+	const tokens = $derived(inferenceContext.tokens);
+
+	// Calculate averaged weights of last token over all layers and heads
+	const averagedWeights: number[] = $derived.by(() => {
+		if (tokens.length <= 1) {
+			return [];
 		}
-		const alpha = Math.round(Math.min(-value, 1) * 100);
-		return `oklch(0.55 0.14 32 / ${alpha}%)`;
+		const lastTokenIndex = tokens.length - 3;
+		const avg: number[] = [];
+		for (let l = 0; l < NUM_LAYERS; l++) {
+			for (let h = 0; h < NUM_HEADS; h++) {
+				for (let i = 0; i < lastTokenIndex; i++) {
+					if (l === 0 && h === 0) {
+						avg.push(0);
+					}
+					avg[i] +=
+						inferenceContext.attentionWeights[l][h][lastTokenIndex][i] / (NUM_LAYERS * NUM_HEADS);
+				}
+			}
+		}
+		return avg;
+	});
+
+	const [minWeight, maxWeight] = $derived([
+		clamp(Math.min(...averagedWeights), { min: 0 }),
+		Math.max(...averagedWeights),
+	]);
+
+	function activation(value: number): number {
+		return Math.round(((value - minWeight) / (maxWeight - minWeight)) * 100);
 	}
 </script>
 
-<div style="display: flex; flex-wrap: wrap; gap: 4px; align-items: flex-end;">
-	<div style="display: flex; flex-direction: column; align-items: center; gap: 1px;">
-		<div
-			style="padding: 3px 7px; border-radius: 5px; font-size: 12px; font-family: &quot;IBM Plex Mono&quot;, monospace; background: oklch(0.908 0.023 32); border: 1.5px solid rgb(232, 227, 221); color: rgb(107, 101, 96); font-weight: 400; transition: 0.3s;"
-		>
-			The
-		</div>
-	</div>
-	<div style="display: flex; flex-direction: column; align-items: center; gap: 1px;">
-		<div
-			style="padding: 3px 7px; border-radius: 5px; font-size: 12px; font-family: &quot;IBM Plex Mono&quot;, monospace; background: oklch(0.923 0.018 32); border: 1.5px solid rgb(232, 227, 221); color: rgb(107, 101, 96); font-weight: 400; transition: 0.3s;"
-		>
-			transformer
-		</div>
-	</div>
-	<div style="display: flex; flex-direction: column; align-items: center; gap: 1px;">
-		<div
-			style="padding: 3px 7px; border-radius: 5px; font-size: 12px; font-family: &quot;IBM Plex Mono&quot;, monospace; background: oklch(0.946 0.011 32); border: 1.5px solid rgb(232, 227, 221); color: rgb(107, 101, 96); font-weight: 400; transition: 0.3s;"
-		>
-			model
-		</div>
-	</div>
-	<div style="display: flex; flex-direction: column; align-items: center; gap: 1px;">
-		<div
-			style="font-size: 8px; color: oklch(0.55 0.14 32); font-family: &quot;IBM Plex Mono&quot;, monospace;"
-		>
-			10%
-		</div>
-		<div
-			style="padding: 3px 7px; border-radius: 5px; font-size: 12px; font-family: &quot;IBM Plex Mono&quot;, monospace; background: oklch(0.887 0.03 32); border: 1.5px solid rgb(232, 227, 221); color: rgb(107, 101, 96); font-weight: 400; transition: 0.3s;"
-		>
-			reads
-		</div>
-	</div>
-	<div style="display: flex; flex-direction: column; align-items: center; gap: 1px;">
-		<div
-			style="padding: 3px 7px; border-radius: 5px; font-size: 12px; font-family: &quot;IBM Plex Mono&quot;, monospace; background: oklch(0.906 0.023 32); border: 1.5px solid rgb(232, 227, 221); color: rgb(107, 101, 96); font-weight: 400; transition: 0.3s;"
-		>
-			tokens
-		</div>
-	</div>
-	<div style="display: flex; flex-direction: column; align-items: center; gap: 1px;">
-		<div
-			style="padding: 3px 7px; border-radius: 5px; font-size: 12px; font-family: &quot;IBM Plex Mono&quot;, monospace; background: oklch(0.927 0.017 32); border: 1.5px solid rgb(232, 227, 221); color: rgb(107, 101, 96); font-weight: 400; transition: 0.3s;"
-		>
-			one
-		</div>
-	</div>
-	<div style="display: flex; flex-direction: column; align-items: center; gap: 1px;">
-		<div
-			style="font-size: 8px; color: oklch(0.55 0.14 32); font-family: &quot;IBM Plex Mono&quot;, monospace;"
-		>
-			12%
-		</div>
-		<div
-			style="padding: 3px 7px; border-radius: 5px; font-size: 12px; font-family: &quot;IBM Plex Mono&quot;, monospace; background: oklch(0.863 0.037 32); border: 1.5px solid rgb(232, 227, 221); color: rgb(107, 101, 96); font-weight: 400; transition: 0.3s;"
-		>
-			by
-		</div>
-	</div>
-	<div style="display: flex; flex-direction: column; align-items: center; gap: 1px;">
-		<div
-			style="font-size: 8px; color: oklch(0.55 0.14 32); font-family: &quot;IBM Plex Mono&quot;, monospace;"
-		>
-			47%
-		</div>
-		<div
-			style="padding: 3px 7px; border-radius: 5px; font-size: 12px; font-family: &quot;IBM Plex Mono&quot;, monospace; background: oklch(0.54 0.14 32); border: 1.5px solid oklch(0.82 0.1 32); color: oklch(0.55 0.14 32); font-weight: 600; transition: 0.3s;"
-		>
-			one
-		</div>
+<div class="container">
+	<div class="tokens">
+		{#snippet tokenSnippet(weight: number, text: string)}
+			<div class="token">
+				{#if weight > 10}
+					<div class="weight">{weight}%</div>
+				{/if}
+				<div class="text" style="--token-opacity: {weight}%;">{text}</div>
+			</div>
+		{/snippet}
+
+		{#each tokens as token, i (i)}
+			{@render tokenSnippet(activation(averagedWeights[i]), stringify(token))}
+		{/each}
 	</div>
 </div>
+
+<style lang="scss">
+	.container {
+		display: flex;
+		flex-direction: row-reverse;
+		overflow-x: auto;
+		padding-bottom: 10px;
+
+		.tokens {
+			flex: 1;
+			display: flex;
+			gap: 4px;
+			align-items: flex-end;
+		}
+
+		.token {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			gap: 1px;
+
+			.weight {
+				font-size: 8px;
+				color: $accent-terra;
+				font-family: $font-mono;
+			}
+
+			.text {
+				padding: 3px 7px;
+				border-radius: 5px;
+				font-size: 12px;
+				font-family: $font-mono;
+				background: rgba($accent-terra, var(--token-opacity));
+				border: 1.5px solid $border-gray;
+				color: $text-dark-gray;
+				font-weight: 400;
+				transition: 0.3s;
+			}
+		}
+	}
+</style>

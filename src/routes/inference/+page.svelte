@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { generateOnce } from "$lib/gemma3/inference";
-	import { fromSafetensors, type Gemma3 } from "$lib/gemma3/model";
+	import { fromSafetensors, NUM_LAYERS, type Gemma3 } from "$lib/gemma3/model";
 	import { AutoTokenizer, PreTrainedTokenizer } from "@huggingface/transformers";
 	import { defaultDevice, init } from "@jax-js/jax";
 	import { cachedFetch, safetensors } from "@jax-js/loaders";
@@ -9,8 +9,6 @@
 	import LayerView from "./layer-view/LayerView.svelte";
 	import LayerPlaceholder from "./layer-view/LayerPlaceholder.svelte";
 	import { setInferenceContext, type InferenceContext } from "./context";
-
-	const NUM_LAYERS = 18;
 
 	const inferenceContext = $state<InferenceContext>({
 		tokens: [],
