@@ -1,7 +1,6 @@
 <script lang="ts">
-	import { clamp, stringify } from "$lib/util";
+	import { stringify } from "$lib/util";
 	import { getInferenceContext } from "../context";
-	import AttentionByHead from "./AttentionByHead.svelte";
 
 	const inferenceContext = getInferenceContext();
 	const tokens = $derived(inferenceContext.tokens);
@@ -10,15 +9,36 @@
 	// TODO: head selection
 	const selectedHead = $state(0);
 
+	let zoom = $state(1.0);
+	function zoomIn() {
+		zoom = Math.min(zoom + 0.1, 2);
+	}
+	function zoomOut() {
+		zoom = Math.max(zoom - 0.1, 0.3);
+	}
+
 	// Must have selected layer
 	const attentionWeights = $derived(
 		inferenceContext.attentionWeights[selectedLayer!][selectedHead],
 	);
 
-	const [minWeight, maxWeight] = $derived([
-		clamp(Math.min(...attentionWeights.flat(2)), { min: 0 }),
-		Math.max(...attentionWeights.flat(2)),
-	]);
+	const [minWeight, maxWeight] = $derived.by(() => {
+		let minWeight = Infinity;
+		let maxWeight = 0;
+		const n = attentionWeights.length;
+		const m = attentionWeights[0].length;
+		for (let i = 0; i < n; i++) {
+			for (let j = 0; j < m; j++) {
+				if (attentionWeights[i][j] > minWeight) {
+					minWeight = attentionWeights[i][j];
+				}
+				if (attentionWeights[i][j] < maxWeight) {
+					maxWeight = attentionWeights[i][j];
+				}
+			}
+		}
+		return [minWeight, maxWeight];
+	});
 
 	function cellOpacity(value: number): number {
 		return Math.round(((value - minWeight) / (maxWeight - minWeight)) * 100);
@@ -26,19 +46,20 @@
 </script>
 
 <div class="container">
-	<div>
-		<span class="title">Attention weights</span>
-		<span class="subtitle"> · causal mask applied</span>
+	<div class="header">
+		<div>
+			<span class="title">Attention weights</span>
+			<span class="subtitle"> · causal mask applied</span>
+		</div>
 	</div>
 	<div class="text">
-		Each row shows how much a token attends to each previous token in the columns. Click another
-		layer or head to compare.
+		Each row shows how much a token attends to each previous token in the columns.
 	</div>
 
 	<!-- Heatmap grid -->
 	<div class="grid-container">
 		{#if tokens.length > 0}
-			<div class="grid">
+			<div class="grid" style="zoom: {zoom};">
 				<!-- Column labels -->
 				<div class="column-labels">
 					{#each tokens.slice(0, -1) as token, i (i)}
@@ -70,8 +91,12 @@
 		{/if}
 	</div>
 
-	<!-- Activations per head -->
-	<AttentionByHead />
+	<div class="zoom-controls">
+		Zoom:
+		<button onclick={zoomOut} disabled={zoom <= 0.3}>−</button>
+		<span>{Math.round(zoom * 100)}%</span>
+		<button onclick={zoomIn} disabled={zoom >= 2}>+</button>
+	</div>
 </div>
 
 <style lang="scss">
@@ -82,6 +107,49 @@
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
+
+		.header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+		}
+
+		.zoom-controls {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+
+			font-size: 11px;
+			color: $text-gray;
+			font-family: $font-mono;
+			min-width: 32px;
+			text-align: center;
+
+			button {
+				width: 22px;
+				height: 22px;
+				padding: 0;
+				border: 1px solid $border-gray;
+				border-radius: 4px;
+				background: none;
+				cursor: pointer;
+				font-size: 14px;
+				line-height: 1;
+				color: $text-gray;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+
+				&:hover:not(:disabled) {
+					background: $border-gray;
+				}
+
+				&:disabled {
+					opacity: 0.3;
+					cursor: default;
+				}
+			}
+		}
 
 		.title {
 			font-size: 13px;
@@ -108,7 +176,9 @@
 		.grid-container {
 			flex: 1;
 			overflow: auto;
-			padding: 20px;
+			display: flex;
+			// padding: 10px 0;
+			margin-bottom: 5px;
 
 			.grid {
 				display: inline-block;

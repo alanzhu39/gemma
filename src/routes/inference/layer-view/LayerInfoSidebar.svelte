@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { isSlidingAttention, NUM_HEADS } from "$lib/gemma3/model";
 	import { getInferenceContext } from "../context";
+	import AttentionByHead from "./AttentionByHead.svelte";
 
 	const inferenceContext = getInferenceContext();
 	const selectedLayer = $derived(inferenceContext.selectedLayer);
@@ -50,6 +51,8 @@
 			{/each}
 		</div>
 	</div>
+
+	<AttentionByHead />
 </div>
 
 <style lang="scss">
