@@ -7,6 +7,7 @@ export type InferenceContext = {
 	tokens: string[];
 	attentionWeights: AttentionWeights;
 	selectedLayer: number | null;
+	selectedHead: number;
 };
 
 export const [getInferenceContext, setInferenceContext] = createContext<InferenceContext>();

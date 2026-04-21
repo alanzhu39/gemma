@@ -16,6 +16,7 @@
 		tokens: [],
 		attentionWeights: [],
 		selectedLayer: null,
+		selectedHead: 0,
 	});
 	setInferenceContext(inferenceContext);
 	const selectedLayer = $derived(inferenceContext.selectedLayer);
@@ -25,6 +26,7 @@
 			inferenceContext.selectedLayer = null;
 		} else {
 			inferenceContext.selectedLayer = layer;
+			inferenceContext.selectedHead = 0;
 		}
 	}
 

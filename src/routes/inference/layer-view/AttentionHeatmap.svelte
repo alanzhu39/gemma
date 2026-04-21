@@ -5,16 +5,14 @@
 	const inferenceContext = getInferenceContext();
 	const tokens = $derived(inferenceContext.tokens);
 	const selectedLayer = $derived(inferenceContext.selectedLayer);
-
-	// TODO: head selection
-	const selectedHead = $state(0);
+	const selectedHead = $derived(inferenceContext.selectedHead);
 
 	let zoom = $state(1.0);
 	function zoomIn() {
 		zoom = Math.min(zoom + 0.1, 2);
 	}
 	function zoomOut() {
-		zoom = Math.max(zoom - 0.1, 0.3);
+		zoom = Math.max(zoom - 0.1, 0.2);
 	}
 
 	// Must have selected layer
@@ -29,10 +27,10 @@
 		const m = attentionWeights[0].length;
 		for (let i = 0; i < n; i++) {
 			for (let j = 0; j < m; j++) {
-				if (attentionWeights[i][j] > minWeight) {
+				if (attentionWeights[i][j] < minWeight && attentionWeights[i][j] > 0) {
 					minWeight = attentionWeights[i][j];
 				}
-				if (attentionWeights[i][j] < maxWeight) {
+				if (attentionWeights[i][j] > maxWeight) {
 					maxWeight = attentionWeights[i][j];
 				}
 			}
@@ -176,8 +174,6 @@
 		.grid-container {
 			flex: 1;
 			overflow: auto;
-			display: flex;
-			// padding: 10px 0;
 			margin-bottom: 5px;
 
 			.grid {

@@ -1,14 +1,15 @@
 <script lang="ts">
 	import { isSlidingAttention, NUM_HEADS } from "$lib/gemma3/model";
 	import { getInferenceContext } from "../context";
-	import AttentionByHead from "./AttentionByHead.svelte";
 
 	const inferenceContext = getInferenceContext();
 	const selectedLayer = $derived(inferenceContext.selectedLayer);
+	const selectedHead = $derived(inferenceContext.selectedHead);
 	const isSWA = $derived(isSlidingAttention(selectedLayer!));
 
-	// TODO: head selection
-	const selectedHead = 0;
+	function setSelectedHead(head: number) {
+		inferenceContext.selectedHead = head;
+	}
 </script>
 
 <div class="container">
@@ -45,14 +46,15 @@
 		<div class="title">ATTENTION HEAD</div>
 		<div class="heads">
 			{#each { length: NUM_HEADS }, i}
-				<button class={`head-button ${selectedHead === i ? "selected" : ""}`}>
+				<button
+					onclick={() => setSelectedHead(i)}
+					class={`head-button ${selectedHead === i ? "selected" : ""}`}
+				>
 					{i}
 				</button>
 			{/each}
 		</div>
 	</div>
-
-	<AttentionByHead />
 </div>
 
 <style lang="scss">

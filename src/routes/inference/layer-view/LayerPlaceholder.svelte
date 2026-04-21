@@ -12,6 +12,7 @@
 		display: flex;
 		overflow: hidden;
 		min-height: 0px;
+		min-width: 100%;
 
 		.placeholder {
 			flex: 1 1 0%;
