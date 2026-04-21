@@ -136,7 +136,7 @@
 					padding: 0px;
 					font-family: $font-mono;
 					cursor: pointer;
-					background: $backgroud-gray;
+					background: $background-gray;
 					border: 1.5px solid $border-gray;
 					color: $text-dark-gray;
 					font-weight: 400;

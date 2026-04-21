@@ -2,13 +2,7 @@
 	import "./layout.css";
 	import favicon from "$lib/assets/favicon.svg";
 	import { resolve } from "$app/paths";
-	import { page } from "$app/stores";
-
-	// Font configuration — swap to change the global UI typeface
-	const fonts = {
-		sans: "'Plus Jakarta Sans', sans-serif",
-		mono: "'IBM Plex Mono', monospace",
-	};
+	import { page } from "$app/state";
 
 	const TABS = [
 		{
@@ -26,7 +20,7 @@
 
 	let { children } = $props();
 
-	let activeTab = $derived(TABS.find((t) => $page.url.pathname.startsWith(t.href))?.id ?? "");
+	let activeTab = $derived(TABS.find((t) => page.url.pathname.startsWith(t.href))?.id ?? "");
 </script>
 
 <svelte:head>
@@ -38,65 +32,22 @@
 </svelte:head>
 
 <!-- Header bar -->
-<header
-	class="flex shrink-0 border-b"
-	style="
-		height: 44px;
-		background: #ffffff;
-		border-color: #e8e3dd;
-		font-family: {fonts.mono};
-		font-size: 11px;
-	"
->
+<header class="header">
 	<!-- Brand -->
-	<div
-		class="flex shrink-0 items-center gap-2.5 border-r px-4 no-underline"
-		style="border-color: #e8e3dd;"
-	>
-		<span
-			style="
-				font-weight: 700;
-				color: oklch(0.55 0.14 32);
-				font-size: 13px;
-				letter-spacing: -0.01em;
-				font-family: {fonts.sans};
-			"
-		>
+	<div class="brand">
+		<span class="title">
 			<a href={resolve("/")}> ◈ gemma </a>
 		</span>
-		<span
-			class="rounded px-1.5 py-0.5"
-			style="
-				background: oklch(0.96 0.05 195);
-				color: oklch(0.50 0.12 195);
-				border: 1px solid oklch(0.78 0.10 195);
-				font-size: 10px;
-			"
-		>
-			WebGPU
-		</span>
-		<span style="color: oklch(0.50 0.14 142); font-size: 10px;">● ready</span>
+		<span class="webgpu"> WebGPU </span>
+		<span class="status">● ready</span>
 	</div>
 
 	<!-- Tabs -->
-	<nav class="flex items-stretch justify-center pl-3">
+	<nav class="tabs">
 		{#each TABS as tab (tab.id)}
 			{@const isActive = tab.id === activeTab}
-			<a
-				href={resolve(tab.href)}
-				class="flex items-center gap-1.5 px-5 no-underline transition-all"
-				style="
-					border-bottom: 2px solid {isActive ? 'oklch(0.55 0.14 32)' : 'transparent'};
-				"
-			>
-				<span
-					style="
-						font-size: 12px;
-						font-family: {fonts.sans};
-						font-weight: 600;
-						color: {isActive ? 'oklch(0.55 0.14 32)' : '#a09890'};
-					"
-				>
+			<a href={resolve(tab.href)} class={`tab ${isActive ? "active" : ""}`}>
+				<span class={`label ${isActive ? "active" : ""}`}>
 					{tab.label}
 				</span>
 			</a>
@@ -122,8 +73,83 @@
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
-		background: #faf9f7;
-		color: #1c1917;
+		background: $background-gray;
+		color: $text-black;
+	}
+
+	.header {
+		display: flex;
+		flex-shrink: 0;
+		height: 44px;
+		border-bottom: 1px solid $border-gray;
+		background: $background-white;
+		font-family: $font-mono;
+		font-size: 11px;
+
+		.brand {
+			display: flex;
+			gap: 10px;
+			align-items: center;
+			padding-inline: 16px;
+			text-decoration-line: none;
+			border-right: 1px solid $border-gray;
+
+			.title {
+				font-weight: 700;
+				color: $accent-terra;
+				font-size: 13px;
+				letter-spacing: -0.01em;
+				font-family: $font-sans;
+			}
+
+			.webgpu {
+				border-radius: 4px;
+				padding: 2px 6px;
+				background: $background-teal;
+				color: $text-teal;
+				border: 1px solid $border-teal;
+				font-size: 10px;
+			}
+
+			.status {
+				color: $accent-green;
+				font-size: 10px;
+			}
+		}
+
+		.tabs {
+			display: flex;
+			align-items: stretch;
+			justify-content: center;
+			padding-left: 12px;
+
+			.tab {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+				padding-inline: 20px;
+				text-decoration-line: none;
+				transition-property: all;
+				transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+				transition-duration: 150ms;
+				border-bottom: 2px solid transparent;
+
+				&.active {
+					border-bottom: 2px solid $accent-terra;
+				}
+
+				.label {
+					font-size: 12px;
+					font-family: $font-sans;
+					font-weight: 600;
+					color: $text-gray;
+
+					&.active {
+						color: $accent-terra;
+					}
+				}
+			}
+		}
 	}
 
 	.main {
