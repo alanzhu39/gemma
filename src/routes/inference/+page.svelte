@@ -18,6 +18,7 @@
 	});
 	setInferenceContext(inferenceContext);
 	const selectedLayer = $derived(inferenceContext.selectedLayer);
+	const tokens = $derived(inferenceContext.tokens);
 
 	function setSelectedLayer(layer: number) {
 		if (layer === selectedLayer) {
@@ -94,7 +95,10 @@
 	<!-- Context -->
 	<div class="context">
 		<div class="header">
-			<span class="title"> Context </span>
+			<span class="title">Context</span>
+			{#if tokens.length > 1}
+				<span class="subtitle"> · {tokens.length} tokens</span>
+			{/if}
 		</div>
 		<!-- TODO: animate new tokens -->
 		<textarea bind:value={context} rows={5} class="text-input" placeholder="Enter a prompt…"
@@ -141,6 +145,13 @@
 					font-weight: 600;
 					color: $text-black;
 					font-family: $font-sans;
+				}
+
+				.subtitle {
+					font-size: 11px;
+					color: $text-gray;
+					font-weight: 400;
+					font-family: $font-mono;
 				}
 			}
 
