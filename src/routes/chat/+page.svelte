@@ -269,8 +269,8 @@
 
 	.model-badge {
 		padding: 8px 10px;
-		background: oklch(0.96 0.05 142);
-		border: 1px solid oklch(0.78 0.1 142);
+		background: $background-green;
+		border: 1px solid $border-green;
 		border-radius: 7px;
 
 		.model-name {
@@ -309,8 +309,8 @@
 
 		&.ready {
 			color: $accent-green;
-			background: oklch(0.96 0.05 142);
-			border: 1px solid oklch(0.78 0.1 142);
+			background: $background-green;
+			border: 1px solid $border-green;
 		}
 	}
 
@@ -421,14 +421,14 @@
 		font-family: $font-mono;
 
 		&.user {
-			background: #dbeafe;
-			border: 1px solid #93c5fd;
-			color: oklch(0.5 0.12 252);
+			background: $background-light-blue;
+			border: 1px solid $border-light-blue;
+			color: $text-dark-blue;
 		}
 
 		&.assistant {
-			background: oklch(0.96 0.05 142);
-			border: 1px solid oklch(0.78 0.1 142);
+			background: $background-green;
+			border: 1px solid $border-green;
 			color: $accent-green;
 		}
 	}
@@ -454,7 +454,7 @@
 		font-family: $font-mono;
 
 		&.user {
-			color: oklch(0.5 0.12 252);
+			color: $text-dark-blue;
 		}
 
 		&.assistant {
@@ -476,8 +476,8 @@
 	}
 
 	.user-bubble {
-		background: #eff6ff;
-		border: 1px solid #bfdbfe;
+		background: $background-light-blue;
+		border: 1px solid $border-light-blue;
 		border-radius: 8px;
 		padding: 10px 14px;
 		font-size: 13px;
