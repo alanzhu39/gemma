@@ -3,12 +3,13 @@
 	import { fromSafetensors, NUM_LAYERS, type Gemma3 } from "$lib/gemma3/model";
 	import { AutoTokenizer, PreTrainedTokenizer } from "@huggingface/transformers";
 	import { defaultDevice, init } from "@jax-js/jax";
-	import { cachedFetch, safetensors } from "@jax-js/loaders";
+	import { cachedFetch, safetensors, type FetchProgress } from "@jax-js/loaders";
 	import AttentionByToken from "./AttentionByToken.svelte";
 	import Layers from "./Layers.svelte";
 	import LayerView from "./layer-view/LayerView.svelte";
 	import LayerPlaceholder from "./layer-view/LayerPlaceholder.svelte";
 	import { setInferenceContext, type InferenceContext } from "./context";
+	import DownloadToast, { type DownloadState } from "$lib/DownloadToast.svelte";
 
 	const inferenceContext = $state<InferenceContext>({
 		tokens: [],
@@ -35,11 +36,21 @@
 	let model = $state<Gemma3 | null>(null);
 	let tokenizer = $state<PreTrainedTokenizer | null>(null);
 
+	let downloadState = $state<DownloadState>({
+		visible: false,
+		loadedBytes: 0,
+	});
+
 	async function getModel(): Promise<Gemma3> {
 		if (model === null) {
 			const weightsUrl =
 				"https://huggingface.co/alanzhu39/gemma-3-270m-it-f16/resolve/main/model.safetensors";
-			const data = await cachedFetch(weightsUrl, {});
+			const data = await cachedFetch(weightsUrl, {}, (progress: FetchProgress) => {
+				downloadState.visible = true;
+				downloadState.loadedBytes = progress.loadedBytes;
+				downloadState.totalBytes = progress.totalBytes;
+			});
+			downloadState.visible = false;
 			const file = safetensors.parse(data);
 			model = fromSafetensors(file);
 		}
@@ -80,6 +91,8 @@
 		rel="stylesheet"
 	/>
 </svelte:head>
+
+<DownloadToast {...downloadState} />
 
 <div class="container">
 	<!-- Layers -->

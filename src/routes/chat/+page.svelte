@@ -3,8 +3,9 @@
 	import { fromSafetensors, MAX_CONTEXT_LEN, type Gemma3 } from "$lib/gemma3/model";
 	import { AutoTokenizer, PreTrainedTokenizer } from "@huggingface/transformers";
 	import { defaultDevice, init } from "@jax-js/jax";
-	import { cachedFetch, safetensors } from "@jax-js/loaders";
+	import { cachedFetch, safetensors, type FetchProgress } from "@jax-js/loaders";
 	import { marked } from "marked";
+	import DownloadToast, { type DownloadState } from "$lib/DownloadToast.svelte";
 
 	type Message = {
 		role: "user" | "assistant";
@@ -26,6 +27,11 @@
 	let chatEndEl = $state<HTMLDivElement | null>(null);
 	let scrollTrigger = $state(0);
 
+	let downloadState = $state<DownloadState>({
+		visible: false,
+		loadedBytes: 0,
+	});
+
 	$effect(() => {
 		// eslint-disable-next-line @typescript-eslint/no-unused-expressions -- detect scrollTrigger reactively
 		scrollTrigger;
@@ -36,7 +42,12 @@
 		if (model) return model;
 		const weightsUrl =
 			"https://huggingface.co/alanzhu39/gemma-3-270m-it-f16/resolve/main/model.safetensors";
-		const data = await cachedFetch(weightsUrl, {});
+		const data = await cachedFetch(weightsUrl, {}, (progress: FetchProgress) => {
+			downloadState.visible = true;
+			downloadState.loadedBytes = progress.loadedBytes;
+			downloadState.totalBytes = progress.totalBytes;
+		});
+		downloadState.visible = false;
 		const file = safetensors.parse(data);
 		model = fromSafetensors(file);
 		return model;
@@ -119,6 +130,8 @@
 		}
 	}
 </script>
+
+<DownloadToast {...downloadState} />
 
 <div class="layout">
 	<!-- Sidebar -->
