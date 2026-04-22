@@ -29,7 +29,7 @@
 		}
 	}
 
-	let context = $state("The capital of France is");
+	let context = $state("Plants create energy through a process known as");
 	let isRunning = $state(false);
 
 	let model = $state<Gemma3 | null>(null);
@@ -175,17 +175,17 @@
 				display: flex;
 				gap: 8px;
 				align-items: center;
-				margin-bottom: 10px;
 
 				.generate {
 					margin-left: auto;
 					display: flex;
 					gap: 7px;
+					padding: 10px 0;
 
 					.run-button {
 						@include transition-all;
 
-						width: 100%;
+						width: 132px;
 						border-radius: 8px;
 						padding: 8px 16px;
 						font-size: 14px;
@@ -200,8 +200,13 @@
 						background: $accent-terra;
 						border: 1.5px solid $accent-terra;
 						color: $text-white;
-						box-shadow: $shadow-accent-terra 0px 2px 8px;
 						transition: 0.12s;
+
+						&:disabled {
+							opacity: 0.5;
+							cursor: not-allowed;
+							box-shadow: none;
+						}
 					}
 				}
 			}

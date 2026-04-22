@@ -40,6 +40,7 @@
 	"dependencies": {
 		"@huggingface/transformers": "^4.0.1",
 		"@jax-js/jax": "^0.1.11",
-		"@jax-js/loaders": "^0.1.1"
+		"@jax-js/loaders": "^0.1.1",
+		"marked": "^18.0.2"
 	}
 }
