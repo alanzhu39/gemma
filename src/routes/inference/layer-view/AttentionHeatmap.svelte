@@ -20,26 +20,8 @@
 		inferenceContext.attentionWeights[selectedLayer!][selectedHead],
 	);
 
-	const [minWeight, maxWeight] = $derived.by(() => {
-		let minWeight = Infinity;
-		let maxWeight = 0;
-		const n = attentionWeights.length;
-		const m = attentionWeights[0].length;
-		for (let i = 0; i < n; i++) {
-			for (let j = 0; j < m; j++) {
-				if (attentionWeights[i][j] < minWeight && attentionWeights[i][j] > 0) {
-					minWeight = attentionWeights[i][j];
-				}
-				if (attentionWeights[i][j] > maxWeight) {
-					maxWeight = attentionWeights[i][j];
-				}
-			}
-		}
-		return [minWeight, maxWeight];
-	});
-
 	function cellOpacity(value: number): number {
-		return Math.round(((value - minWeight) / (maxWeight - minWeight)) * 100);
+		return Math.round(value * 100);
 	}
 </script>
 

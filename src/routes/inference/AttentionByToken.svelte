@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { NUM_HEADS, NUM_LAYERS } from "$lib/gemma3/model";
-	import { clamp, stringify } from "$lib/util";
+	import { stringify } from "$lib/util";
 	import { getInferenceContext } from "./context";
 
 	const inferenceContext = getInferenceContext();
@@ -27,13 +27,8 @@
 		return avg;
 	});
 
-	const [minWeight, maxWeight] = $derived([
-		clamp(Math.min(...averagedWeights), { min: 0 }),
-		Math.max(...averagedWeights),
-	]);
-
 	function activation(value: number): number {
-		return Math.round(((value - minWeight) / (maxWeight - minWeight)) * 100);
+		return Math.round(value * 100);
 	}
 </script>
 
@@ -41,7 +36,7 @@
 	<div class="tokens">
 		{#snippet tokenSnippet(weight: number, text: string)}
 			<div class="token">
-				{#if weight > 10}
+				{#if weight > 1}
 					<div class="weight">{weight}%</div>
 				{/if}
 				<div class="text" style="--token-opacity: {weight}%;">{text}</div>

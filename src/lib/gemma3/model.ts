@@ -254,7 +254,7 @@ export function runAttention(
 	kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
 	kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
 
-	let scores: np.Array;
+	let weights: np.Array;
 	if (isPrefill) {
 		// Run with computed values
 		let mask = np.tri(S, S, 0, { dtype: DType.Bool });
@@ -263,10 +263,16 @@ export function runAttention(
 		}
 
 		// [S, 4, 256] * [256, N] -> [4, S, N]
-		scores = np.where(mask, np.einsum("SHD,ND->HSN", q, k).mul(1 / 16), -Infinity); // 1 / sqrt(headDim = 256)
+		weights = nn.softmax(
+			np.where(
+				mask,
+				np.einsum("SHD,ND->HSN", q, k).mul(1 / 16), // 1 / sqrt(headDim = 256)
+				-Infinity,
+			),
+		);
 
 		// [4, S, N] * [N, 256] -> [S, 4, 256]
-		const a = np.einsum("HSN,ND->SHD", nn.softmax(scores.ref), v);
+		const a = np.einsum("HSN,ND->SHD", weights.ref, v);
 
 		x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
 	} else {
@@ -284,19 +290,25 @@ export function runAttention(
 		}
 
 		// [S, 4, 256] * [256, N] -> [4, S, N]
-		scores = np.where(mask, np.einsum("SHD,ND->HSN", q, kvCache.k.ref).mul(1 / 16), -Infinity); // 1 / sqrt(headDim = 256)
+		weights = nn.softmax(
+			np.where(
+				mask,
+				np.einsum("SHD,ND->HSN", q, kvCache.k.ref).mul(1 / 16), // 1 / sqrt(headDim = 256)
+				-Infinity,
+			),
+		);
 
 		// [4, S, N] * [N, 256] -> [S, 4, 256]
-		const a = np.einsum("HSN,ND->SHD", nn.softmax(scores.ref), kvCache.v.ref);
+		const a = np.einsum("HSN,ND->SHD", weights.ref, kvCache.v.ref);
 
 		x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
 	}
 
 	if (collectWeights) {
-		return [x, kvCache, scores.slice([], [], [0, S])];
+		return [x, kvCache, weights.slice([], [], [0, S])];
 	}
 
-	scores.dispose();
+	weights.dispose();
 
 	return [x, kvCache];
 }
