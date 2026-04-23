@@ -229,7 +229,7 @@ export function runAttention(
 
 	let q = runRMSNorm(qNorm, runLinear(qProj, x.ref).reshape([S, NUM_HEADS, HEAD_DIM])); // [S, 4, 256]
 	let k = runRMSNorm(kNorm, runLinear(kProj, x.ref)); // [S, 256]
-	const v = runLinear(vProj, x); // [S, 256]
+	let v = runLinear(vProj, x); // [S, 256]
 
 	// Apply RoPE
 	const base = isSlidingAttention ? 10000 : 1000000;
@@ -254,33 +254,19 @@ export function runAttention(
 	kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
 	kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
 
-	let weights: np.Array;
+	let mask: np.Array;
 	if (isPrefill) {
-		// Run with computed values
-		let mask = np.tri(S, S, 0, { dtype: DType.Bool });
+		mask = np.tri(S, S, 0, { dtype: DType.Bool });
 		if (isSlidingAttention) {
 			mask = mask.notEqual(np.tri(S, S, -512));
 		}
-
-		// [S, 4, 256] * [256, N] -> [4, S, N]
-		weights = nn.softmax(
-			np.where(
-				mask,
-				np.einsum("SHD,ND->HSN", q, k).mul(1 / 16), // 1 / sqrt(headDim = 256)
-				-Infinity,
-			),
-		);
-
-		// [4, S, N] * [N, 256] -> [S, 4, 256]
-		const a = np.einsum("HSN,ND->SHD", weights.ref, v);
-
-		x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
 	} else {
 		k.dispose();
 		v.dispose();
 
-		// Run with cached values
-		let mask: np.Array;
+		k = kvCache.k.ref;
+		v = kvCache.v.ref;
+
 		if (isSlidingAttention) {
 			// Compute ring buffer mask
 			const sequencePositions = np.arange(offset, offset + S).reshape([S, 1]);
@@ -288,29 +274,28 @@ export function runAttention(
 		} else {
 			mask = np.tri(S, N, offset, { dtype: DType.Bool });
 		}
-
-		// [S, 4, 256] * [256, N] -> [4, S, N]
-		weights = nn.softmax(
-			np.where(
-				mask,
-				np.einsum("SHD,ND->HSN", q, kvCache.k.ref).mul(1 / 16), // 1 / sqrt(headDim = 256)
-				-Infinity,
-			),
-		);
-
-		// [4, S, N] * [N, 256] -> [S, 4, 256]
-		const a = np.einsum("HSN,ND->SHD", weights.ref, kvCache.v.ref);
-
-		x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
 	}
+
+	// [S, 4, 256] * [256, N] -> [4, S, N]
+	const weights = nn.softmax(
+		np.where(
+			mask,
+			np.einsum("SHD,ND->HSN", q, k).mul(1 / 16), // 1 / sqrt(headDim = 256)
+			-Infinity,
+		),
+	);
+
+	// [4, S, N] * [N, 256] -> [S, 4, 256]
+	const a = np.einsum("HSN,ND->SHD", weights.ref, v);
+
+	x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
 
 	if (collectWeights) {
 		return [x, kvCache, weights.slice([], [], [0, S])];
+	} else {
+		weights.dispose();
+		return [x, kvCache];
 	}
-
-	weights.dispose();
-
-	return [x, kvCache];
 }
 
 export type Gemma3MLP = {
