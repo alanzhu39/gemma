@@ -1,4 +1,11 @@
-import { createGemma3State, runGemma3Step, runLinear, type Gemma3, type Linear } from "./model";
+import {
+	createGemma3State,
+	MAX_CONTEXT_LEN,
+	runGemma3Step,
+	runLinear,
+	type Gemma3,
+	type Linear,
+} from "./model";
 import { PreTrainedTokenizer } from "@huggingface/transformers";
 import { nn, numpy as np, tree } from "@jax-js/jax";
 import type { AttentionWeights } from "../../routes/inference/context";
@@ -9,7 +16,6 @@ export async function* streamGenerate(
 	model: Gemma3,
 	tokenizer: PreTrainedTokenizer,
 	messages: Array<{ role: string; content: string }>,
-	maxTokens = 512,
 ): AsyncGenerator<string> {
 	const prompt = tokenizer.apply_chat_template(messages, {
 		tokenize: false,
@@ -17,6 +23,7 @@ export async function* streamGenerate(
 	}) as string;
 
 	const tokens = tokenizer.encode(prompt);
+	const maxTokens = MAX_CONTEXT_LEN - tokens.length;
 	const tokensAr = np.array(tokens, { dtype: np.uint32 });
 
 	const state = createGemma3State(model);
