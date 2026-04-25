@@ -90,6 +90,7 @@ export function runGemma3Step(
 			layers[i],
 			state.kvCaches[i],
 			x,
+			x.shape[0],
 			state.position,
 			isSlidingAttention(i),
 			state.collectWeights,
@@ -136,13 +137,22 @@ export const runDecoderLayer = jit(
 		}: Gemma3DecoderLayer,
 		kvCache: KVCache,
 		x: np.Array,
+		seqLen: number,
 		position: number,
 		isSlidingAttention: boolean = false,
 		collectWeights: boolean = false,
 	): [np.Array, KVCache] | [np.Array, KVCache, np.Array] {
 		let residual = x.ref;
 		x = runRMSNorm(inputLayernorm, x);
-		const out = runAttention(selfAttn, kvCache, x, position, isSlidingAttention, collectWeights);
+		const out = runAttention(
+			selfAttn,
+			kvCache,
+			x,
+			seqLen,
+			position,
+			isSlidingAttention,
+			collectWeights,
+		);
 		x = out[0];
 		x = runRMSNorm(postAttentionLayernorm, x);
 		x = np.clip(x.add(residual), -65504.0, 65504.0);
@@ -160,7 +170,7 @@ export const runDecoderLayer = jit(
 
 		return [x, out[1]];
 	},
-	{ staticArgnums: [3, 4, 5] },
+	{ staticArgnums: [3, 4, 5, 6] },
 );
 
 export type Gemma3Attention = {
@@ -172,31 +182,34 @@ export type Gemma3Attention = {
 	kNorm: RMSNorm; // [256]
 };
 
-function precomputeRoPECache(
-	offset: number,
-	headDim: number,
-	base: number,
-): {
-	cos: np.Array;
-	sin: np.Array;
-} {
-	const invFreq = np.divide(
-		1,
-		np.pow(base, np.arange(0, headDim, 2, { dtype: DType.Float32 }).div(headDim)),
-	);
-	const positions = np.arange(offset);
+export const precomputeRoPECache = jit(
+	function precomputeRoPECache(
+		offset: number,
+		headDim: number,
+		base: number,
+	): {
+		cos: np.Array;
+		sin: np.Array;
+	} {
+		const invFreq = np.divide(
+			1,
+			np.pow(base, np.arange(0, headDim, 2, { dtype: DType.Float32 }).div(headDim)),
+		);
+		const positions = np.arange(offset);
 
-	let angles = np.outer(positions, invFreq);
-	angles = np.concatenate([angles.ref, angles], -1);
+		let angles = np.outer(positions, invFreq);
+		angles = np.concatenate([angles.ref, angles], -1);
 
-	const cos = np.cos(angles.ref);
-	const sin = np.sin(angles);
+		const cos = np.cos(angles.ref);
+		const sin = np.sin(angles);
 
-	return {
-		cos,
-		sin,
-	};
-}
+		return {
+			cos,
+			sin,
+		};
+	},
+	{ staticArgnums: [0, 1, 2] },
+);
 
 function rotateHalf(x: np.Array) {
 	const half = x.shape.slice(-1)[0] / 2;
@@ -218,11 +231,12 @@ export function runAttention(
 	{ qProj, kProj, vProj, oProj, kNorm, qNorm }: Gemma3Attention,
 	kvCache: KVCache,
 	x: np.Array, // [S, 640]
+	seqLen: number,
 	position: number, // Current position in the sequence
 	isSlidingAttention: boolean = false,
 	collectWeights: boolean = false,
 ): [np.Array, KVCache] | [np.Array, KVCache, np.Array] {
-	const S = x.shape[0];
+	const S = seqLen;
 	const N = kvCache.k.shape[0];
 	const offset = position;
 	const isPrefill = offset === 0;
