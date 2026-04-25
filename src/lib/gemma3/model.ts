@@ -321,8 +321,8 @@ export function fromSafetensors(file: safetensors.File): Gemma3 {
 	const hydrated: Record<string, np.Array> = {};
 	for (const [key, value] of Object.entries(mappedWeights)) {
 		if (value.dtype === "F16") {
-			hydrated[key] = np.array(new Float32Array(value.data as Float16Array<ArrayBuffer>), {
-				dtype: np.float32,
+			hydrated[key] = np.array(new Float16Array(value.data as Float16Array<ArrayBuffer>), {
+				dtype: np.float16,
 				shape: value.shape,
 			});
 		} else {
