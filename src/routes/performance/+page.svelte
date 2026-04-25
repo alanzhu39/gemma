@@ -54,7 +54,7 @@
 		const start = performance.now();
 
 		const context = "Here is a Python function to find the nth Fibonacci number:";
-		const steps = 100;
+		const steps = 20;
 		const output = runInference(model, tokenizer, context, steps);
 
 		const elapsed = performance.now() - start;

@@ -33,13 +33,12 @@ export async function* streamGenerate(
 		const latent = runGemma3Step(tree.ref(model), state, nextInput);
 		const logits = runLinear({ weight: model.tokenEmbed.ref }, latent.slice([-1]));
 		const predicted = np.argmax(nn.softmax(logits, 1), 1);
-		const tokenId: number = predicted.ref.js()[0];
+		const tokenId: number = (await predicted.ref.data())[0];
 
 		if (STOP_TOKEN_IDS.has(tokenId)) break;
 
 		yield tokenizer.decode([tokenId], { skip_special_tokens: true });
 
-		await new Promise<void>((r) => setTimeout(r, 0));
 		nextInput = predicted;
 	}
 }
