@@ -185,6 +185,7 @@ export type Gemma3Attention = {
 export const precomputeRoPECache = jit(
 	function precomputeRoPECache(
 		offset: number,
+		seqLen: number,
 		headDim: number,
 		base: number,
 	): {
@@ -195,7 +196,7 @@ export const precomputeRoPECache = jit(
 			1,
 			np.pow(base, np.arange(0, headDim, 2, { dtype: DType.Float32 }).div(headDim)),
 		);
-		const positions = np.arange(offset);
+		const positions = np.arange(offset, offset + seqLen);
 
 		let angles = np.outer(positions, invFreq);
 		angles = np.concatenate([angles.ref, angles], -1);
@@ -247,9 +248,9 @@ export function runAttention(
 
 	// Apply RoPE
 	const base = isSlidingAttention ? 10000 : 1000000;
-	const { cos, sin } = precomputeRoPECache(offset + S, HEAD_DIM, base);
-	q = applyRoPE(q, cos.ref.slice([offset, offset + S]), sin.ref.slice([offset, offset + S]));
-	k = applyRoPE(k, cos.slice([offset, offset + S]), sin.slice([offset, offset + S]));
+	const { cos, sin } = precomputeRoPECache(offset, S, HEAD_DIM, base);
+	q = applyRoPE(q, cos.ref, sin.ref);
+	k = applyRoPE(k, cos, sin);
 
 	// Update KV cache
 	const slotPositions = isSlidingAttention
