@@ -11,11 +11,11 @@
 			label: "Inference",
 			href: "/inference",
 		},
-		{
-			id: "performance",
-			label: "Performance",
-			href: "/performance",
-		},
+		// {
+		// 	id: "performance",
+		// 	label: "Performance",
+		// 	href: "/performance",
+		// },
 		{ id: "chat", label: "Chat", href: "/chat" },
 	] as const;
 

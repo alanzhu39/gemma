@@ -100,6 +100,7 @@
 			for await (const token of streamGenerate(m, tok, chatHistory)) {
 				messages[messages.length - 1].content += token;
 				tokenCount++;
+				contextTokens++;
 				scrollTrigger++;
 			}
 
@@ -108,7 +109,6 @@
 			last.tokens = tokenCount;
 			last.tps = parseFloat((tokenCount / (elapsed / 1000)).toFixed(1));
 			last.latencyMs = parseFloat((elapsed / tokenCount).toFixed(0));
-			contextTokens += tokenCount;
 			scrollTrigger++;
 		} finally {
 			isStreaming = false;
