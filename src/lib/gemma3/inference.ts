@@ -75,23 +75,18 @@ export function generateOnce(
 }
 
 // Run inference for model
-export async function runInference(
+export function runInference(
 	model: Gemma3,
 	tokenizer: PreTrainedTokenizer,
 	text: string,
 	steps = 1,
-) {
+): number[] {
 	// Tokenize input
 	// TODO: custom tokenizer
 	const tokens = tokenizer.encode(text);
 
-	console.log("Tokenized text");
-	console.log(`Num tokens: ${tokens.length}`);
-
 	// Embed tokens
 	const tokensAr = np.array(tokens, { dtype: np.uint32 });
-
-	console.log("Embedded tokens");
 
 	// Run step(s)
 	const state = createGemma3State(model);
@@ -101,21 +96,18 @@ export async function runInference(
 		const latent = runGemma3Step(tree.ref(model), state, nextInput);
 
 		// Project back to token space
-		const outProj: Linear = {
-			weight: model.tokenEmbed.ref,
-		};
-		const logits = runLinear(outProj, latent.slice([-1]));
+		const logits = runLinear({ weight: model.tokenEmbed.ref }, latent.slice([-1]));
 
 		// Decode tokens
 		const predictedToken = np.argmax(nn.softmax(logits, 1), 1);
 		nextInput = predictedToken.ref;
 		generatedTokens.push(...predictedToken.ref.js());
 
-		console.log(`Ran step ${i + 1}`);
+		if (i % 10 === 9) {
+			console.log(`Ran step ${i + 1}`);
+		}
 	}
 	nextInput.dispose();
 
-	const decoded = tokenizer.decode(generatedTokens);
-
-	console.log(`${text} -> ${decoded}`);
+	return generatedTokens;
 }
