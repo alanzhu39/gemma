@@ -83,7 +83,7 @@ export function runGemma3Step(
 	tokensAr: np.Array,
 ): np.Array {
 	// Token embedding weights unused here
-	let x = runGemmaTextScaledWordEmbedding(tokenEmbed, tokensAr);
+	let x = runGemmaTextScaledWordEmbedding(tokenEmbed, tokensAr).astype(DType.Float16);
 
 	for (let i = 0; i < layers.length; i++) {
 		const out = runDecoderLayer(
@@ -182,35 +182,32 @@ export type Gemma3Attention = {
 	kNorm: RMSNorm; // [256]
 };
 
-export const precomputeRoPECache = jit(
-	function precomputeRoPECache(
-		offset: number,
-		seqLen: number,
-		headDim: number,
-		base: number,
-	): {
-		cos: np.Array;
-		sin: np.Array;
-	} {
-		const invFreq = np.divide(
-			1,
-			np.pow(base, np.arange(0, headDim, 2, { dtype: DType.Float32 }).div(headDim)),
-		);
-		const positions = np.arange(offset, offset + seqLen);
+function precomputeRoPECache(
+	offset: number,
+	seqLen: number,
+	headDim: number,
+	base: number,
+): {
+	cos: np.Array;
+	sin: np.Array;
+} {
+	const invFreq = np.divide(
+		1,
+		np.pow(base, np.arange(0, headDim, 2, { dtype: DType.Float32 }).div(headDim)),
+	);
+	const positions = np.arange(offset, offset + seqLen);
 
-		let angles = np.outer(positions, invFreq);
-		angles = np.concatenate([angles.ref, angles], -1);
+	let angles = np.outer(positions, invFreq);
+	angles = np.concatenate([angles.ref, angles], -1);
 
-		const cos = np.cos(angles.ref);
-		const sin = np.sin(angles);
+	const cos = np.cos(angles.ref).astype(DType.Float16);
+	const sin = np.sin(angles).astype(DType.Float16);
 
-		return {
-			cos,
-			sin,
-		};
-	},
-	{ staticArgnums: [0, 1, 2] },
-);
+	return {
+		cos,
+		sin,
+	};
+}
 
 function rotateHalf(x: np.Array) {
 	const half = x.shape.slice(-1)[0] / 2;
