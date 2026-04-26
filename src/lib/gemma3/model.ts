@@ -288,6 +288,11 @@ export function runAttention(
 		}
 	}
 
+	const effContextLen = Math.min(offset + S, N);
+	mask = mask.slice([], [0, effContextLen]);
+	k = k.slice([0, effContextLen], []);
+	v = v.slice([0, effContextLen], []);
+
 	// [S, 4, 256] * [256, N] -> [4, S, N]
 	const weights = nn.softmax(
 		np.where(
