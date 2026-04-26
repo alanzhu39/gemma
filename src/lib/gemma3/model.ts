@@ -191,9 +191,8 @@ function precomputeRoPECache(
 	cos: np.Array;
 	sin: np.Array;
 } {
-	const invFreq = np.divide(
-		1,
-		np.pow(base, np.arange(0, headDim, 2, { dtype: DType.Float32 }).div(headDim)),
+	const invFreq = np.exp(
+		np.arange(0, headDim, 2, { dtype: DType.Float32 }).mul(-Math.log(base) / headDim),
 	);
 	const positions = np.arange(offset, offset + seqLen);
 
@@ -250,21 +249,32 @@ export function runAttention(
 	k = applyRoPE(k, cos, sin);
 
 	// Update KV cache
-	const slotPositions = isSlidingAttention
-		? np
-				.arange(N)
-				.sub((offset + S) % N)
-				.add(N)
-				.mod(N)
-				.add(offset + S - N) // Cache slots mapped to their actual positions
-		: np.arange(N);
-	const writeIndexes = slotPositions.ref.greaterEqual(offset).mul(slotPositions.ref.sub(offset));
-	const writeMask = slotPositions.ref
-		.greaterEqual(offset)
-		.mul(slotPositions.ref.less(offset + S))
-		.reshape([-1, 1]);
-	kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
-	kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
+	let slotPositions: np.Array | undefined;
+	if (isSlidingAttention) {
+		// Cache slots mapped to their actual positions
+		slotPositions = np
+			.arange(N)
+			.sub((offset + S) % N)
+			.add(N)
+			.mod(N)
+			.add(offset + S - N);
+		const writeIndexes = slotPositions.ref.greaterEqual(offset).mul(slotPositions.ref.sub(offset));
+		const writeMask = slotPositions.ref
+			.greaterEqual(offset)
+			.mul(slotPositions.ref.less(offset + S))
+			.reshape([-1, 1]);
+		kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
+		kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
+	} else {
+		kvCache.k = np.concatenate(
+			[kvCache.k.ref.slice([0, offset], []), k.ref, kvCache.k.slice([offset + S, N], [])],
+			0,
+		);
+		kvCache.v = np.concatenate(
+			[kvCache.v.ref.slice([0, offset], []), v.ref, kvCache.v.slice([offset + S, N], [])],
+			0,
+		);
+	}
 
 	let mask: np.Array;
 	if (isPrefill) {
@@ -282,7 +292,8 @@ export function runAttention(
 		if (isSlidingAttention) {
 			// Compute ring buffer mask
 			const sequencePositions = np.arange(offset, offset + S).reshape([S, 1]);
-			mask = slotPositions.ref.lessEqual(sequencePositions).mul(slotPositions.greaterEqual(0));
+			// Slot positions should be initialized in the cache update above
+			mask = slotPositions!.ref.lessEqual(sequencePositions).mul(slotPositions!.greaterEqual(0));
 		} else {
 			mask = np.tri(S, N, offset, { dtype: DType.Bool });
 		}
