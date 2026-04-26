@@ -10,8 +10,6 @@ import { PreTrainedTokenizer } from "@huggingface/transformers";
 import { nn, numpy as np, tree } from "@jax-js/jax";
 import type { AttentionWeights } from "../../routes/inference/context";
 
-const STOP_TOKEN_IDS = new Set([1, 106]); // <eos>, <end_of_turn>
-
 /**
  * Returns token ID sampled from logits.
  */
@@ -58,19 +56,27 @@ async function sampleLogits(
 	return (await topKIndices.slice(probsIndex).data())[0];
 }
 
+const STOP_TOKEN_IDS = new Set([1, 106]); // <eos>, <end_of_turn>
+
+export const SAMPLING_DEFAULTS = {
+	temperature: 1.0,
+	topK: 64,
+	topP: 0.95,
+} as const;
+
 export async function* streamGenerate(
 	model: Gemma3,
 	tokenizer: PreTrainedTokenizer,
 	messages: Array<{ role: string; content: string }>,
 	{
-		temperature = 1.0,
-		topK = 64,
-		topP = 0.95,
+		temperature = SAMPLING_DEFAULTS.temperature,
+		topK = SAMPLING_DEFAULTS.topK,
+		topP = SAMPLING_DEFAULTS.topP,
 	}: {
 		temperature?: number;
 		topK?: number;
 		topP?: number;
-	} = {},
+	} = SAMPLING_DEFAULTS,
 ): AsyncGenerator<string> {
 	const prompt = tokenizer.apply_chat_template(messages, {
 		tokenize: false,

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { streamGenerate } from "$lib/gemma3/inference";
+	import { SAMPLING_DEFAULTS, streamGenerate } from "$lib/gemma3/inference";
 	import { fromSafetensors, MAX_CONTEXT_LEN, type Gemma3 } from "$lib/gemma3/model";
 	import { AutoTokenizer, PreTrainedTokenizer } from "@huggingface/transformers";
 	import { defaultDevice, init } from "@jax-js/jax";
@@ -20,6 +20,9 @@
 	let isStreaming = $state(false);
 	let isLoadingModel = $state(false);
 	let contextTokens = $state(0);
+
+	let samplingState = $state({ ...SAMPLING_DEFAULTS });
+	const { temperature, topK, topP } = $derived(samplingState);
 
 	let model = $state<Gemma3 | null>(null);
 	let tokenizer = $state<PreTrainedTokenizer | null>(null);
@@ -97,7 +100,7 @@
 			let tokenCount = 0;
 			const startTime = performance.now();
 
-			for await (const token of streamGenerate(m, tok, chatHistory)) {
+			for await (const token of streamGenerate(m, tok, chatHistory, { temperature, topK, topP })) {
 				messages[messages.length - 1].content += token;
 				tokenCount++;
 				contextTokens++;
@@ -160,6 +163,39 @@
 			<div class="stat-row">
 				<span class="stat-value">{MAX_CONTEXT_LEN.toLocaleString()}</span>
 				<span class="stat-unit">tok max</span>
+			</div>
+		</div>
+
+		<div class="sidebar-section">
+			<span class="section-label" style="font-size:11px">SAMPLING SETTINGS</span>
+			<div class="sampling-body">
+				{#snippet samplingParam(
+					label: string,
+					key: keyof typeof samplingState,
+					range: {
+						min: number;
+						max: number;
+						step: number;
+					},
+				)}
+					<div class="sampling-param">
+						<label class="param-label" for={key}>
+							<span>{label}</span>
+							<span class="param-value"
+								>{key === "topK" ? samplingState[key] : samplingState[key].toFixed(2)}</span
+							>
+						</label>
+						<input id={key} type="range" {...range} bind:value={samplingState[key]} />
+					</div>
+				{/snippet}
+
+				{@render samplingParam("temperature", "temperature", {
+					min: 0.01,
+					max: 2.0,
+					step: 0.01,
+				})}
+				{@render samplingParam("top-k", "topK", { min: 1, max: 100, step: 1 })}
+				{@render samplingParam("top-p", "topP", { min: 0.01, max: 1, step: 0.01 })}
 			</div>
 		</div>
 
@@ -355,6 +391,63 @@
 		&:disabled {
 			opacity: 0.4;
 			cursor: default;
+		}
+	}
+
+	/* ── Sampling settings ── */
+	.sampling-body {
+		margin-top: 14px;
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+	}
+
+	.sampling-param {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.param-label {
+		display: flex;
+		justify-content: space-between;
+		font-size: 10px;
+		font-family: $font-mono;
+		color: $text-gray;
+
+		.param-value {
+			color: $accent-terra;
+			font-weight: 600;
+		}
+	}
+
+	input[type="range"] {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 100%;
+		height: 3px;
+		border-radius: 2px;
+		background: $border-gray;
+		outline: none;
+		cursor: pointer;
+
+		&::-webkit-slider-thumb {
+			-webkit-appearance: none;
+			appearance: none;
+			width: 12px;
+			height: 12px;
+			border-radius: 50%;
+			background: $accent-terra;
+			cursor: pointer;
+		}
+
+		&::-moz-range-thumb {
+			width: 12px;
+			height: 12px;
+			border-radius: 50%;
+			background: $accent-terra;
+			cursor: pointer;
+			border: none;
 		}
 	}
 
