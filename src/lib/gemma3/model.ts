@@ -59,7 +59,8 @@ export type Gemma3State = {
 export function createGemma3State(model: Gemma3, collectWeights = false): Gemma3State {
 	return {
 		kvCaches: model.layers.map((_, i) =>
-			emptyKVCache(isSlidingAttention(i) ? 512 : MAX_CONTEXT_LEN, 256),
+			// emptyKVCache(isSlidingAttention(i) ? 512 : MAX_CONTEXT_LEN, 256),
+			emptyKVCache(isSlidingAttention(i) ? 512 : 0, 256),
 		),
 		position: 0,
 		collectWeights,
@@ -77,6 +78,8 @@ export function isSlidingAttention(i: number): boolean {
 	return i != 5 && i != 11 && i != 17;
 }
 
+const CACHE_EXPANSION_SIZE = 128;
+
 export function runGemma3Step(
 	{ tokenEmbed, layers, norm }: Gemma3,
 	state: Gemma3State,
@@ -86,6 +89,18 @@ export function runGemma3Step(
 	let x = runGemmaTextScaledWordEmbedding(tokenEmbed, tokensAr).astype(DType.Float16);
 
 	for (let i = 0; i < layers.length; i++) {
+		// If kv cache is not large enough, expand it to next multiple of CACHE_EXPANSION_SIZE.
+		if (!isSlidingAttention(i) && state.position + x.shape[0] > state.kvCaches[i].k.shape[0]) {
+			const newCapacity =
+				Math.ceil((state.position + x.shape[0] + 1) / CACHE_EXPANSION_SIZE) * CACHE_EXPANSION_SIZE;
+			state.kvCaches[i].k = np.pad(state.kvCaches[i].k, {
+				0: [0, newCapacity - state.kvCaches[i].k.shape[0]],
+			});
+			state.kvCaches[i].v = np.pad(state.kvCaches[i].v, {
+				0: [0, newCapacity - state.kvCaches[i].v.shape[0]],
+			});
+		}
+
 		const out = runDecoderLayer(
 			layers[i],
 			state.kvCaches[i],
@@ -299,10 +314,10 @@ export function runAttention(
 		}
 	}
 
-	const effContextLen = Math.min(offset + S, N);
-	mask = mask.slice([], [0, effContextLen]);
-	k = k.slice([0, effContextLen], []);
-	v = v.slice([0, effContextLen], []);
+	// const effContextLen = Math.min(offset + S, N);
+	// mask = mask.slice([], [0, effContextLen]);
+	// k = k.slice([0, effContextLen], []);
+	// v = v.slice([0, effContextLen], []);
 
 	// [S, 4, 256] * [256, N] -> [4, S, N]
 	const weights = nn.softmax(
