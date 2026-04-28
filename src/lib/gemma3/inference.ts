@@ -87,11 +87,11 @@ export async function* streamGenerate(
 	const maxTokens = MAX_CONTEXT_LEN - tokens.length;
 	const tokensAr = np.array(tokens, { dtype: np.uint32 });
 
-	const state = createGemma3State(model);
+	let state = createGemma3State(model);
 
 	let nextInput: np.Array = tokensAr;
 	for (let i = 0; i < maxTokens; i++) {
-		const latent = runGemma3Step(tree.ref(model), state, nextInput);
+		const { latent, state: nextState } = runGemma3Step(tree.ref(model), state, nextInput);
 		const logits = runLinear({ weight: model.tokenEmbed.ref }, latent.slice([-1]).flatten());
 
 		const tokenId = await sampleLogits(logits.ref, temperature, topK, topP);
@@ -100,8 +100,11 @@ export async function* streamGenerate(
 
 		yield tokenizer.decode([tokenId], { skip_special_tokens: true });
 
+		state = nextState;
 		nextInput = np.array([tokenId]);
 	}
+
+	tree.dispose(state);
 }
 
 /**
@@ -109,17 +112,21 @@ export async function* streamGenerate(
  * - The full token keys array (input + predicted token).
  * - The attention activations for this pass.
  */
-export function generateOnce(
+export async function generateOnce(
 	model: Gemma3,
 	tokenizer: PreTrainedTokenizer,
 	text: string,
-): [number[], AttentionWeights] {
+): Promise<[number[], AttentionWeights]> {
 	const tokens = tokenizer.encode(text);
 	const tokensAr = np.array(tokens, { dtype: np.uint32 });
 
 	const collectWeights = true;
 	const state = createGemma3State(model, collectWeights);
-	const latent = runGemma3Step(tree.ref(model), state, tokensAr.ref);
+	const { latent, attentionWeights: collectedWeights } = runGemma3Step(
+		tree.ref(model),
+		state,
+		tokensAr.ref,
+	);
 
 	const outProj: Linear = {
 		weight: model.tokenEmbed.ref,
@@ -127,9 +134,12 @@ export function generateOnce(
 	const logits = runLinear(outProj, latent.slice([-1]).flatten());
 	const predictedToken = np.argmax(nn.softmax(logits));
 
-	const collectedWeights = state.attentionWeights;
 	// Must have collected weights
-	const attentionWeights = collectedWeights!.map((layerWeights: np.Array) => layerWeights.js());
+	const attentionWeights = await Promise.all(
+		collectedWeights!.map((layerWeights: np.Array) => layerWeights.jsAsync()),
+	);
+
+	tree.dispose(state);
 
 	return [tokensAr.js().concat(predictedToken.js()), attentionWeights];
 }
@@ -149,11 +159,11 @@ export function runInference(
 	const tokensAr = np.array(tokens, { dtype: np.uint32 });
 
 	// Run step(s)
-	const state = createGemma3State(model);
+	let state = createGemma3State(model);
 	const generatedTokens: number[] = [];
 	let nextInput: np.Array = tokensAr;
 	for (let i = 0; i < steps; i++) {
-		const latent = runGemma3Step(tree.ref(model), state, nextInput);
+		const { latent, state: nextState } = runGemma3Step(tree.ref(model), state, nextInput);
 
 		// Project back to token space
 		const logits = runLinear({ weight: model.tokenEmbed.ref }, latent.slice([-1]).flatten());
@@ -163,11 +173,14 @@ export function runInference(
 		nextInput = predictedToken.ref.slice(null);
 		generatedTokens.push(predictedToken.ref.js());
 
+		state = nextState;
+
 		if (i % 10 === 9) {
 			console.log(`Ran step ${i + 1}`);
 		}
 	}
 	nextInput.dispose();
+	tree.dispose(state);
 
 	return generatedTokens;
 }

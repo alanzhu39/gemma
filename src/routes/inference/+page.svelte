@@ -77,7 +77,7 @@
 		const model = await getModel();
 		const tokenizer = await getTokenizer();
 
-		const [tokensAr, attentionWeights] = generateOnce(model, tokenizer, context);
+		const [tokensAr, attentionWeights] = await generateOnce(model, tokenizer, context);
 		context = tokenizer.decode(tokensAr, { skip_special_tokens: true });
 		isRunning = false;
 		inferenceContext.tokens = tokensAr.flatMap((token) => tokenizer.decode([token]));

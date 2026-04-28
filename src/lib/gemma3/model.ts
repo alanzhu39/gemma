@@ -58,13 +58,9 @@ export type Gemma3State = {
 
 export function createGemma3State(model: Gemma3, collectWeights = false): Gemma3State {
 	return {
-		kvCaches: model.layers.map((_, i) =>
-			// emptyKVCache(isSlidingAttention(i) ? 512 : MAX_CONTEXT_LEN, 256),
-			emptyKVCache(isSlidingAttention(i) ? 512 : 0, 256),
-		),
+		kvCaches: model.layers.map((_, i) => emptyKVCache(isSlidingAttention(i) ? 512 : 0, 256)),
 		position: 0,
 		collectWeights,
-		...(collectWeights ? { attentionWeights: [] } : {}),
 	};
 }
 
@@ -82,45 +78,56 @@ const CACHE_EXPANSION_SIZE = 128;
 
 export function runGemma3Step(
 	{ tokenEmbed, layers, norm }: Gemma3,
-	state: Gemma3State,
+	{ kvCaches, position, collectWeights }: Gemma3State,
 	tokensAr: np.Array,
-): np.Array {
+): { latent: np.Array; state: Gemma3State; attentionWeights?: np.Array[] } {
 	// Token embedding weights unused here
 	let x = runGemmaTextScaledWordEmbedding(tokenEmbed, tokensAr).astype(DType.Float16);
 
+	const S = x.shape[0];
+	const newContextLen = position + S;
+
+	const attentionWeights: np.Array[] = [];
+
 	for (let i = 0; i < layers.length; i++) {
 		// If kv cache is not large enough, expand it to next multiple of CACHE_EXPANSION_SIZE.
-		if (!isSlidingAttention(i) && state.position + x.shape[0] > state.kvCaches[i].k.shape[0]) {
-			const newCapacity =
-				Math.ceil((state.position + x.shape[0] + 1) / CACHE_EXPANSION_SIZE) * CACHE_EXPANSION_SIZE;
-			state.kvCaches[i].k = np.pad(state.kvCaches[i].k, {
-				0: [0, newCapacity - state.kvCaches[i].k.shape[0]],
+		if (!isSlidingAttention(i) && newContextLen > kvCaches[i].k.shape[0]) {
+			const newCapacity = Math.ceil(newContextLen / CACHE_EXPANSION_SIZE) * CACHE_EXPANSION_SIZE;
+			kvCaches[i].k = np.pad(kvCaches[i].k, {
+				0: [0, newCapacity - kvCaches[i].k.shape[0]],
 			});
-			state.kvCaches[i].v = np.pad(state.kvCaches[i].v, {
-				0: [0, newCapacity - state.kvCaches[i].v.shape[0]],
+			kvCaches[i].v = np.pad(kvCaches[i].v, {
+				0: [0, newCapacity - kvCaches[i].v.shape[0]],
 			});
 		}
 
 		const out = runDecoderLayer(
 			layers[i],
-			state.kvCaches[i],
+			kvCaches[i],
 			x,
-			state.position,
-			state.position === 0,
+			position,
+			position === 0,
 			isSlidingAttention(i),
-			state.collectWeights,
+			collectWeights,
 		);
 		x = out[0];
-		state.kvCaches[i] = out[1];
-		if (state.collectWeights) {
-			state.attentionWeights!.push(out[2]!);
+		kvCaches[i] = out[1];
+		if (collectWeights) {
+			attentionWeights.push(out[2]!);
 		}
 	}
 
-	const S = x.shape[0];
-	state.position = state.position + S;
+	position = newContextLen;
 
-	return runRMSNorm(norm, x);
+	return {
+		latent: runRMSNorm(norm, x),
+		state: {
+			position,
+			kvCaches,
+			collectWeights,
+		},
+		...(collectWeights ? { attentionWeights } : {}),
+	};
 }
 
 export function runGemmaTextScaledWordEmbedding(
