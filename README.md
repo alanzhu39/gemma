@@ -2,9 +2,9 @@
 
 Gemma 3 270M-Instruct running entirely in your browser, on WebGPU.
 
-**[Live demo →](https://gemma.alanzhu39.com)**
+![Screenshot](images/screenshot.png)
 
-[images/screenshot.png]
+**[Live demo →](https://gemma.alanzhu39.com)**
 
 ## Overview
 
