@@ -4,6 +4,8 @@ Gemma 3 270M-Instruct running entirely in your browser, on WebGPU.
 
 **[Live demo →](https://gemma.alanzhu39.com)**
 
+[images/screenshot.png]
+
 ## Overview
 
 This project runs full FP16 inference for [Gemma 3 270M-Instruct](https://huggingface.co/google/gemma-3-270m-it) directly in the browser via WebGPU. The original Google weights are in BF16, which WebGPU doesn't support, so I [converted](https://github.com/alanzhu39/gemma/blob/main/scripts/convert_safetensors_dtype.py) the safetensors file to FP16 and host it in a separate HuggingFace [repo](https://huggingface.co/alanzhu39/gemma-3-270m-it-f16). For more info on the Gemma3 architecture, see [this blog post](https://developers.googleblog.com/gemma-explained-whats-new-in-gemma-3/).
