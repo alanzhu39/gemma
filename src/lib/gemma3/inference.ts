@@ -20,7 +20,6 @@ async function sampleLogits(
 	topK: number,
 	topP: number,
 ): Promise<number> {
-	console.log(topK, topP);
 	const scaledLogits = logits.div(temperature);
 	const topKIndices = np.flip(scaledLogits.ref.argsort()).slice([0, topK]);
 
@@ -88,7 +87,6 @@ export async function* streamGenerate(
 	}) as { input_ids: number[] };
 	const maxTokens = MAX_CONTEXT_LEN - tokens.length;
 	const tokensAr = np.array(tokens, { dtype: np.uint32 }).slice([state.position]);
-	console.log(tokensAr.shape);
 
 	let nextInput: np.Array = tokensAr;
 	for (let i = 0; i < maxTokens; i++) {
