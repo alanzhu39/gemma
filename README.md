@@ -32,9 +32,3 @@ npm run dev
 ```
 
 Requires a browser with WebGPU support (Chrome 113+ or Edge 113+). Safari support is partial.
-
-## TODO
-
-- [ ] Performance benchmarking: tok/s with vs. without JIT, memory usage with vs. without KV cache
-- [ ] More performance optimizations
-- [ ] More models (Gemma 4 E2B?)
