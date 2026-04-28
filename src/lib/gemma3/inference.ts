@@ -4,6 +4,7 @@ import {
 	runGemma3Step,
 	runLinear,
 	type Gemma3,
+	type Gemma3State,
 	type Linear,
 } from "./model";
 import { PreTrainedTokenizer } from "@huggingface/transformers";
@@ -19,6 +20,7 @@ async function sampleLogits(
 	topK: number,
 	topP: number,
 ): Promise<number> {
+	console.log(topK, topP);
 	const scaledLogits = logits.div(temperature);
 	const topKIndices = np.flip(scaledLogits.ref.argsort()).slice([0, topK]);
 
@@ -67,6 +69,7 @@ export const SAMPLING_DEFAULTS = {
 export async function* streamGenerate(
 	model: Gemma3,
 	tokenizer: PreTrainedTokenizer,
+	state: Gemma3State,
 	messages: Array<{ role: string; content: string }>,
 	{
 		temperature = SAMPLING_DEFAULTS.temperature,
@@ -77,17 +80,15 @@ export async function* streamGenerate(
 		topK?: number;
 		topP?: number;
 	} = SAMPLING_DEFAULTS,
-): AsyncGenerator<string> {
-	const prompt = tokenizer.apply_chat_template(messages, {
-		tokenize: false,
+): AsyncGenerator<{ token?: string; state?: Gemma3State }> {
+	const { input_ids: tokens } = tokenizer.apply_chat_template(messages, {
+		tokenize: true,
+		return_tensor: false,
 		add_generation_prompt: true,
-	}) as string;
-
-	const tokens = tokenizer.encode(prompt);
+	}) as { input_ids: number[] };
 	const maxTokens = MAX_CONTEXT_LEN - tokens.length;
-	const tokensAr = np.array(tokens, { dtype: np.uint32 });
-
-	let state = createGemma3State(model);
+	const tokensAr = np.array(tokens, { dtype: np.uint32 }).slice([state.position]);
+	console.log(tokensAr.shape);
 
 	let nextInput: np.Array = tokensAr;
 	for (let i = 0; i < maxTokens; i++) {
@@ -96,15 +97,18 @@ export async function* streamGenerate(
 
 		const tokenId = await sampleLogits(logits.ref, temperature, topK, topP);
 
-		if (STOP_TOKEN_IDS.has(tokenId)) break;
+		if (STOP_TOKEN_IDS.has(tokenId)) {
+			yield { state: nextState };
+			break;
+		}
 
-		yield tokenizer.decode([tokenId], { skip_special_tokens: true });
+		yield {
+			token: tokenizer.decode([tokenId], { skip_special_tokens: true }),
+		};
 
 		state = nextState;
 		nextInput = np.array([tokenId]);
 	}
-
-	tree.dispose(state);
 }
 
 /**

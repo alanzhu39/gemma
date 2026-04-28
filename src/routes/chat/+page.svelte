@@ -1,8 +1,14 @@
 <script lang="ts">
 	import { SAMPLING_DEFAULTS, streamGenerate } from "$lib/gemma3/inference";
-	import { fromSafetensors, MAX_CONTEXT_LEN, type Gemma3 } from "$lib/gemma3/model";
+	import {
+		createGemma3State,
+		fromSafetensors,
+		MAX_CONTEXT_LEN,
+		type Gemma3,
+		type Gemma3State,
+	} from "$lib/gemma3/model";
 	import { AutoTokenizer, PreTrainedTokenizer } from "@huggingface/transformers";
-	import { defaultDevice, init } from "@jax-js/jax";
+	import { defaultDevice, init, tree } from "@jax-js/jax";
 	import { cachedFetch, safetensors, type FetchProgress } from "@jax-js/loaders";
 	import { marked } from "marked";
 	import DownloadToast, { type DownloadState } from "$lib/DownloadToast.svelte";
@@ -26,6 +32,7 @@
 
 	let model = $state<Gemma3 | null>(null);
 	let tokenizer = $state<PreTrainedTokenizer | null>(null);
+	let modelState = $state<Gemma3State | null>(null);
 
 	let chatEndEl = $state<HTMLDivElement | null>(null);
 	let scrollTrigger = $state(0);
@@ -86,10 +93,14 @@
 			}
 			defaultDevice("webgpu");
 
-			const [m, tok] = await Promise.all([getModel(), getTokenizer()]);
+			const [model, tokenizer] = await Promise.all([getModel(), getTokenizer()]);
 			isLoadingModel = false;
 
-			const userTokens = tok.encode(userContent).length;
+			if (modelState === null) {
+				modelState = createGemma3State(model);
+			}
+
+			const userTokens = tokenizer.encode(userContent).length;
 			messages[messages.length - 1].tokens = userTokens;
 			contextTokens += userTokens;
 
@@ -100,11 +111,26 @@
 			let tokenCount = 0;
 			const startTime = performance.now();
 
-			for await (const token of streamGenerate(m, tok, chatHistory, { temperature, topK, topP })) {
-				messages[messages.length - 1].content += token;
-				tokenCount++;
-				contextTokens++;
-				scrollTrigger++;
+			for await (const { token, state: finalState } of streamGenerate(
+				model,
+				tokenizer,
+				modelState,
+				chatHistory,
+				{
+					temperature,
+					topK,
+					topP,
+				},
+			)) {
+				if (token !== undefined) {
+					messages[messages.length - 1].content += token;
+					tokenCount++;
+					contextTokens++;
+					scrollTrigger++;
+				}
+				if (finalState !== undefined) {
+					modelState = finalState;
+				}
 			}
 
 			const elapsed = performance.now() - startTime;
@@ -130,6 +156,10 @@
 		if (!isStreaming) {
 			messages = [];
 			contextTokens = 0;
+			if (modelState !== null) {
+				tree.dispose(modelState);
+				modelState = null;
+			}
 		}
 	}
 </script>
