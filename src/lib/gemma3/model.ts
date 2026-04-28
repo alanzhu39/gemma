@@ -105,8 +105,8 @@ export function runGemma3Step(
 			layers[i],
 			state.kvCaches[i],
 			x,
-			x.shape[0],
 			state.position,
+			state.position === 0,
 			isSlidingAttention(i),
 			state.collectWeights,
 		);
@@ -152,8 +152,8 @@ export const runDecoderLayer = jit(
 		}: Gemma3DecoderLayer,
 		kvCache: KVCache,
 		x: np.Array,
-		seqLen: number,
-		position: number,
+		position: np.Array,
+		isPrefill: boolean,
 		isSlidingAttention: boolean = false,
 		collectWeights: boolean = false,
 	): [np.Array, KVCache] | [np.Array, KVCache, np.Array] {
@@ -163,8 +163,8 @@ export const runDecoderLayer = jit(
 			selfAttn,
 			kvCache,
 			x,
-			seqLen,
 			position,
+			isPrefill,
 			isSlidingAttention,
 			collectWeights,
 		);
@@ -185,7 +185,7 @@ export const runDecoderLayer = jit(
 
 		return [x, out[1]];
 	},
-	{ staticArgnums: [3, 4, 5, 6] },
+	{ staticArgnums: [4, 5, 6] },
 );
 
 export type Gemma3Attention = {
@@ -198,7 +198,7 @@ export type Gemma3Attention = {
 };
 
 function precomputeRoPECache(
-	offset: number,
+	offset: np.Array,
 	seqLen: number,
 	headDim: number,
 	base: number,
@@ -209,7 +209,7 @@ function precomputeRoPECache(
 	const invFreq = np.exp(
 		np.arange(0, headDim, 2, { dtype: DType.Float32 }).mul(-Math.log(base) / headDim),
 	);
-	const positions = np.arange(offset, offset + seqLen);
+	const positions = np.arange(seqLen).add(offset);
 
 	let angles = np.outer(positions, invFreq);
 	angles = np.concatenate([angles.ref, angles], -1);
@@ -243,15 +243,13 @@ export function runAttention(
 	{ qProj, kProj, vProj, oProj, kNorm, qNorm }: Gemma3Attention,
 	kvCache: KVCache,
 	x: np.Array, // [S, 640]
-	seqLen: number,
-	position: number, // Current position in the sequence
+	position: np.Array, // scalar, current position in the sequence
+	isPrefill: boolean,
 	isSlidingAttention: boolean = false,
 	collectWeights: boolean = false,
 ): [np.Array, KVCache] | [np.Array, KVCache, np.Array] {
-	const S = seqLen;
+	const S = x.shape[0];
 	const N = kvCache.k.shape[0];
-	const offset = position;
-	const isPrefill = offset === 0;
 
 	let q = runRMSNorm(qNorm, runLinear(qProj, x.ref).reshape([S, NUM_HEADS, HEAD_DIM])); // [S, 4, 256]
 	let k = runRMSNorm(kNorm, runLinear(kProj, x.ref)); // [S, 256]
@@ -259,37 +257,23 @@ export function runAttention(
 
 	// Apply RoPE
 	const base = isSlidingAttention ? 10000 : 1000000;
-	const { cos, sin } = precomputeRoPECache(offset, S, HEAD_DIM, base);
+	const { cos, sin } = precomputeRoPECache(position.ref, S, HEAD_DIM, base);
 	q = applyRoPE(q, cos.ref, sin.ref);
 	k = applyRoPE(k, cos, sin);
 
 	// Update KV cache
-	let slotPositions: np.Array | undefined;
-	if (isSlidingAttention) {
-		// Cache slots mapped to their actual positions
-		slotPositions = np
-			.arange(N)
-			.sub((offset + S) % N)
-			.add(N)
-			.mod(N)
-			.add(offset + S - N);
-		const writeIndexes = slotPositions.ref.greaterEqual(offset).mul(slotPositions.ref.sub(offset));
-		const writeMask = slotPositions.ref
-			.greaterEqual(offset)
-			.mul(slotPositions.ref.less(offset + S))
-			.reshape([-1, 1]);
-		kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
-		kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
-	} else {
-		kvCache.k = np.concatenate(
-			[kvCache.k.ref.slice([0, offset], []), k.ref, kvCache.k.slice([offset + S, N], [])],
-			0,
-		);
-		kvCache.v = np.concatenate(
-			[kvCache.v.ref.slice([0, offset], []), v.ref, kvCache.v.slice([offset + S, N], [])],
-			0,
-		);
-	}
+	const slotPositions = isSlidingAttention
+		? np.arange(N).sub(position.ref.add(S).mod(N)).add(N).mod(N).add(position.ref.add(S).sub(N)) // Cache slots mapped to their actual positions
+		: np.arange(N);
+	const writeIndexes = slotPositions.ref
+		.greaterEqual(position.ref)
+		.mul(slotPositions.ref.sub(position.ref));
+	const writeMask = slotPositions.ref
+		.greaterEqual(position.ref)
+		.mul(slotPositions.ref.less(position.ref.add(S)))
+		.reshape([-1, 1]);
+	kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
+	kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
 
 	let mask: np.Array;
 	if (isPrefill) {
@@ -304,20 +288,9 @@ export function runAttention(
 		k = kvCache.k.ref;
 		v = kvCache.v.ref;
 
-		if (isSlidingAttention) {
-			// Compute ring buffer mask
-			const sequencePositions = np.arange(offset, offset + S).reshape([S, 1]);
-			// Slot positions should be initialized in the cache update above
-			mask = slotPositions!.ref.lessEqual(sequencePositions).mul(slotPositions!.greaterEqual(0));
-		} else {
-			mask = np.tri(S, N, offset, { dtype: DType.Bool });
-		}
+		const sequencePositions = np.arange(S).add(position.ref).reshape([S, 1]);
+		mask = slotPositions.ref.lessEqual(sequencePositions).mul(slotPositions.greaterEqual(0));
 	}
-
-	// const effContextLen = Math.min(offset + S, N);
-	// mask = mask.slice([], [0, effContextLen]);
-	// k = k.slice([0, effContextLen], []);
-	// v = v.slice([0, effContextLen], []);
 
 	// [S, 4, 256] * [256, N] -> [4, S, N]
 	const weights = nn.softmax(
@@ -332,6 +305,8 @@ export function runAttention(
 	const a = np.einsum("HSN,ND->SHD", weights.ref, v);
 
 	x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
+
+	position.dispose();
 
 	if (collectWeights) {
 		return [x, kvCache, weights.slice([], [], [0, S])];
