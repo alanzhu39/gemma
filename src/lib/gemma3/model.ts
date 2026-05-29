@@ -89,15 +89,38 @@ export function runGemma3Step(
 	// Token embedding weights unused here
 	let x = runGemmaTextScaledWordEmbedding(tokenEmbed, tokensAr).astype(DType.Float32);
 
+	const isPrefill = position === 0;
 	const S = x.shape[0];
 	const newContextLen = position + S;
+	const newCapacity =
+		newContextLen > kvCaches[0].k.shape[0]
+			? Math.ceil(newContextLen / CACHE_EXPANSION_SIZE) * CACHE_EXPANSION_SIZE
+			: kvCaches[0].k.shape[0];
+	const swaCapacity = 512;
 
 	const attentionWeights: np.Array[] = [];
 
+	const slidingWindowSlots = np
+		.arange(swaCapacity)
+		.sub((position + S) % swaCapacity)
+		.add(swaCapacity)
+		.mod(swaCapacity)
+		.add(position + S - swaCapacity); // Cache slots mapped to their actual positions
+	const globalSlots = np.arange(newCapacity);
+
+	const sequencePositions = np.arange(S).add(position).reshape([S, 1]);
+	const slidingWindowMask = isPrefill
+		? np.tri(S, S, 0, { dtype: DType.Bool }).notEqual(np.tri(S, S, -512))
+		: slidingWindowSlots.ref
+				.lessEqual(sequencePositions.ref)
+				.mul(slidingWindowSlots.ref.greaterEqual(0));
+	const globalMask = isPrefill
+		? np.tri(S, S, 0, { dtype: DType.Bool })
+		: globalSlots.ref.lessEqual(sequencePositions.ref).mul(globalSlots.ref.greaterEqual(0));
+
 	for (let i = 0; i < layers.length; i++) {
 		// If kv cache is not large enough, expand it to next multiple of CACHE_EXPANSION_SIZE.
-		if (!isSlidingAttention(i) && newContextLen > kvCaches[i].k.shape[0]) {
-			const newCapacity = Math.ceil(newContextLen / CACHE_EXPANSION_SIZE) * CACHE_EXPANSION_SIZE;
+		if (!isSlidingAttention(i) && newCapacity > kvCaches[i].k.shape[0]) {
 			kvCaches[i].k = np.pad(kvCaches[i].k, {
 				0: [0, newCapacity - kvCaches[i].k.shape[0]],
 			});
@@ -106,12 +129,17 @@ export function runGemma3Step(
 			});
 		}
 
+		const slotPositions = isSlidingAttention(i) ? slidingWindowSlots : globalSlots;
+		const mask = isSlidingAttention(i) ? slidingWindowMask : globalMask;
+
 		const out = runDecoderLayer(
 			layers[i],
 			kvCaches[i],
+			slotPositions.ref,
 			x,
 			position,
-			position === 0,
+			mask.ref,
+			isPrefill,
 			isSlidingAttention(i),
 			collectWeights,
 		);
@@ -123,6 +151,12 @@ export function runGemma3Step(
 	}
 
 	position = newContextLen;
+
+	slidingWindowSlots.dispose();
+	globalSlots.dispose();
+	sequencePositions.dispose();
+	slidingWindowMask.dispose();
+	globalMask.dispose();
 
 	return {
 		latent: runRMSNorm(norm, x),
@@ -168,8 +202,10 @@ export const runDecoderLayer = jit(
 			postFeedforwardLayernorm,
 		}: Gemma3DecoderLayer,
 		kvCache: KVCache,
+		slotPositions: np.Array,
 		x: np.Array,
 		position: np.Array,
+		mask: np.Array,
 		isPrefill: boolean,
 		isSlidingAttention: boolean = false,
 		collectWeights: boolean = false,
@@ -179,8 +215,10 @@ export const runDecoderLayer = jit(
 		const out = runAttention(
 			selfAttn,
 			kvCache,
+			slotPositions,
 			x,
 			position,
+			mask,
 			isPrefill,
 			isSlidingAttention,
 			collectWeights,
@@ -204,7 +242,7 @@ export const runDecoderLayer = jit(
 
 		return [x, out[1]];
 	},
-	{ staticArgnums: [4, 5, 6] },
+	{ staticArgnums: [6, 7, 8] },
 );
 
 export type Gemma3Attention = {
@@ -261,14 +299,15 @@ function applyRoPE(x: np.Array, cos: np.Array, sin: np.Array) {
 export function runAttention(
 	{ qProj, kProj, vProj, oProj, kNorm, qNorm }: Gemma3Attention,
 	kvCache: KVCache,
+	slotPositions: np.Array,
 	x: np.Array, // [S, 640]
 	position: np.Array, // scalar, current position in the sequence
+	mask: np.Array, // [S, S], causal and sliding window attention mask
 	isPrefill: boolean,
 	isSlidingAttention: boolean = false,
 	collectWeights: boolean = false,
 ): [np.Array, KVCache] | [np.Array, KVCache, np.Array] {
 	const S = x.shape[0];
-	const N = kvCache.k.shape[0];
 
 	let q = runRMSNorm(qNorm, runLinear(qProj, x.ref).reshape([S, NUM_HEADS, HEAD_DIM])); // [S, 4, 256]
 	let k = runRMSNorm(kNorm, runLinear(kProj, x.ref)); // [S, 256]
@@ -281,9 +320,6 @@ export function runAttention(
 	k = applyRoPE(k, cos, sin);
 
 	// Update KV cache
-	const slotPositions = isSlidingAttention
-		? np.arange(N).sub(position.ref.add(S).mod(N)).add(N).mod(N).add(position.ref.add(S).sub(N)) // Cache slots mapped to their actual positions
-		: np.arange(N);
 	const writeIndexes = slotPositions.ref
 		.greaterEqual(position.ref)
 		.mul(slotPositions.ref.sub(position.ref));
@@ -294,21 +330,12 @@ export function runAttention(
 	kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
 	kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
 
-	let mask: np.Array;
-	if (isPrefill) {
-		mask = np.tri(S, S, 0, { dtype: DType.Bool });
-		if (isSlidingAttention) {
-			mask = mask.notEqual(np.tri(S, S, -512));
-		}
-	} else {
+	if (!isPrefill) {
 		k.dispose();
 		v.dispose();
 
 		k = kvCache.k.ref;
 		v = kvCache.v.ref;
-
-		const sequencePositions = np.arange(S).add(position.ref).reshape([S, 1]);
-		mask = slotPositions.ref.lessEqual(sequencePositions).mul(slotPositions.greaterEqual(0));
 	}
 
 	// [S, 4, 256] * [256, N] -> [4, S, N]
