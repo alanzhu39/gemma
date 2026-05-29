@@ -10,25 +10,30 @@ export type Linear = {
 	bias?: np.Array; // [out]
 };
 
-export function runLinear({ weight, bias }: Linear, x: np.Array): np.Array {
+export const runLinear = jit(function runLinear({ weight, bias }: Linear, x: np.Array): np.Array {
 	x = np.dot(x, weight.transpose());
 	if (bias) x = x.add(bias);
 	return x;
-}
+});
 
 export type RMSNorm = {
 	gamma: np.Array;
 };
 
-export function runRMSNorm({ gamma }: RMSNorm, x: np.Array, eps: number = 1e-6): np.Array {
-	// Gemma-style RMSNorm: out[i] = (input[i] / RMS(input)) * (weight[i] + 1)
-	const dtype = x.dtype;
-	x = x.astype(np.float32); // RMSNorm in high precision to avoid numerics issues.
-	x = x
-		.div(np.sqrt(np.square(x.ref).mean(-1, { keepdims: true }).add(eps)))
-		.mul(gamma.astype(np.float32).add(1));
-	return x.astype(dtype);
-}
+export const runRMSNorm = jit(
+	function runRMSNorm({ gamma }: RMSNorm, x: np.Array, eps: number = 1e-6): np.Array {
+		// Gemma-style RMSNorm: out[i] = (input[i] / RMS(input)) * (weight[i] + 1)
+		const dtype = x.dtype;
+		x = x.astype(np.float32); // RMSNorm in high precision to avoid numerics issues.
+		x = x
+			.div(np.sqrt(np.square(x.ref).mean(-1, { keepdims: true }).add(eps)))
+			.mul(gamma.astype(np.float32).add(1));
+		return x.astype(dtype);
+	},
+	{
+		staticArgnums: [2],
+	},
+);
 
 export type KVCache = {
 	k: np.Array; // [max_seq_len, head_dim]
@@ -130,13 +135,18 @@ export function runGemma3Step(
 	};
 }
 
-export function runGemmaTextScaledWordEmbedding(
-	tokenEmbed: np.Array,
-	tokensAr: np.Array,
-	embedScale: number = 640 ** 0.5,
-): np.Array {
-	return tokenEmbed.slice(tokensAr).mul(embedScale);
-}
+export const runGemmaTextScaledWordEmbedding = jit(
+	function runGemmaTextScaledWordEmbedding(
+		tokenEmbed: np.Array,
+		tokensAr: np.Array,
+		embedScale: number = 640 ** 0.5,
+	): np.Array {
+		return tokenEmbed.slice(tokensAr).mul(embedScale);
+	},
+	{
+		staticArgnums: [2],
+	},
+);
 
 export type Gemma3DecoderLayer = {
 	inputLayernorm: RMSNorm;
