@@ -96,27 +96,11 @@ export function runGemma3Step(
 		newContextLen > kvCaches[0].k.shape[0]
 			? Math.ceil(newContextLen / CACHE_EXPANSION_SIZE) * CACHE_EXPANSION_SIZE
 			: kvCaches[0].k.shape[0];
-	const swaCapacity = 512;
 
 	const attentionWeights: np.Array[] = [];
 
-	const slidingWindowSlots = np
-		.arange(swaCapacity)
-		.sub((position + S) % swaCapacity)
-		.add(swaCapacity)
-		.mod(swaCapacity)
-		.add(position + S - swaCapacity); // Cache slots mapped to their actual positions
-	const globalSlots = np.arange(newCapacity);
-
-	const sequencePositions = np.arange(S).add(position).reshape([S, 1]);
-	const slidingWindowMask = isPrefill
-		? np.tri(S, S, 0, { dtype: DType.Bool }).notEqual(np.tri(S, S, -512))
-		: slidingWindowSlots.ref
-				.lessEqual(sequencePositions.ref)
-				.mul(slidingWindowSlots.ref.greaterEqual(0));
-	const globalMask = isPrefill
-		? np.tri(S, S, 0, { dtype: DType.Bool })
-		: globalSlots.ref.lessEqual(sequencePositions.ref).mul(globalSlots.ref.greaterEqual(0));
+	const { slidingWindowSlots, slidingWindowMask, globalSlots, globalMask, sequencePositions } =
+		precomputeSlotsAndMasks(position, S, newCapacity, isPrefill);
 
 	for (let i = 0; i < layers.length; i++) {
 		// If kv cache is not large enough, expand it to next multiple of CACHE_EXPANSION_SIZE.
@@ -253,6 +237,53 @@ export type Gemma3Attention = {
 	qNorm: RMSNorm; // [256]
 	kNorm: RMSNorm; // [256]
 };
+
+const precomputeSlotsAndMasks = jit(
+	function precomputeSlotsAndMasks(
+		position: np.Array,
+		S: number,
+		cacheCapacity: number,
+		isPrefill: boolean,
+	): {
+		slidingWindowSlots: np.Array;
+		slidingWindowMask: np.Array;
+		globalSlots: np.Array;
+		globalMask: np.Array;
+		sequencePositions: np.Array;
+	} {
+		const swaCapacity = 512;
+
+		const sequencePositions = np.arange(S).add(position.ref).reshape([S, 1]);
+
+		const slidingWindowSlots = np
+			.arange(swaCapacity)
+			.sub(position.ref.add(S).mod(swaCapacity))
+			.add(swaCapacity)
+			.mod(swaCapacity)
+			.add(position.ref.add(S).sub(swaCapacity)); // Cache slots mapped to their actual positions
+		const globalSlots = np.arange(cacheCapacity);
+
+		const slidingWindowMask = isPrefill
+			? np.tri(S, S, 0, { dtype: DType.Bool }).notEqual(np.tri(S, S, -512))
+			: slidingWindowSlots.ref
+					.lessEqual(sequencePositions.ref)
+					.mul(slidingWindowSlots.ref.greaterEqual(0));
+		const globalMask = isPrefill
+			? np.tri(S, S, 0, { dtype: DType.Bool })
+			: globalSlots.ref.lessEqual(sequencePositions.ref).mul(globalSlots.ref.greaterEqual(0));
+
+		return {
+			slidingWindowSlots,
+			slidingWindowMask,
+			globalSlots,
+			globalMask,
+			sequencePositions,
+		};
+	},
+	{
+		staticArgnums: [1, 2, 3],
+	},
+);
 
 function precomputeRoPECache(
 	offset: np.Array,

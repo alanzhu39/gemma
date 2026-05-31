@@ -2,7 +2,7 @@
 	import { runInference } from "$lib/gemma3/inference";
 	import { fromSafetensors, type Gemma3 } from "$lib/gemma3/model";
 	import { AutoTokenizer, PreTrainedTokenizer, TextStreamer } from "@huggingface/transformers";
-	import { defaultDevice, init } from "@jax-js/jax";
+	import { defaultDevice, init, setDebug } from "@jax-js/jax";
 	import { cachedFetch, safetensors, type FetchProgress } from "@jax-js/loaders";
 	import DownloadToast, { type DownloadState } from "$lib/DownloadToast.svelte";
 	import { pipeline } from "@huggingface/transformers";
@@ -41,6 +41,8 @@
 	}
 
 	async function runBenchmark() {
+		setDebug(1);
+
 		const devices = await init("webgpu");
 		if (!devices.includes("webgpu")) {
 			alert("WebGPU required but not available!");
@@ -111,7 +113,7 @@
 
 <div>
 	Measurements
-	{#each measurements as tps, i (i)}
+	{#each measurements.toReversed() as tps, i (i)}
 		<div>{tps.toFixed(2)} tok/s</div>
 	{/each}
 </div>
