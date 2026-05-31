@@ -42,8 +42,8 @@ export type KVCache = {
 
 export function emptyKVCache(maxSeqLen: number, headDim: number): KVCache {
 	return {
-		k: np.zeros([maxSeqLen, headDim], { dtype: DType.Float16 }),
-		v: np.zeros([maxSeqLen, headDim], { dtype: DType.Float16 }),
+		k: np.zeros([maxSeqLen, headDim], { dtype: DType.Float32 }),
+		v: np.zeros([maxSeqLen, headDim], { dtype: DType.Float32 }),
 	};
 }
 
@@ -87,7 +87,7 @@ export function runGemma3Step(
 	tokensAr: np.Array,
 ): { latent: np.Array; state: Gemma3State; attentionWeights?: np.Array[] } {
 	// Token embedding weights unused here
-	let x = runGemmaTextScaledWordEmbedding(tokenEmbed, tokensAr).astype(DType.Float16);
+	let x = runGemmaTextScaledWordEmbedding(tokenEmbed, tokensAr).astype(DType.Float32);
 
 	const S = x.shape[0];
 	const newContextLen = position + S;
@@ -187,13 +187,15 @@ export const runDecoderLayer = jit(
 		);
 		x = out[0];
 		x = runRMSNorm(postAttentionLayernorm, x);
-		x = np.clip(x.add(residual), -65504.0, 65504.0);
+		x = x.add(residual);
+		// x = np.clip(x, -65504.0, 65504.0);
 
 		residual = x.ref;
 		x = runRMSNorm(preFeedforwardLayernorm, x);
 		x = runMLP(mlp, x);
 		x = runRMSNorm(postFeedforwardLayernorm, x);
-		x = np.clip(x.add(residual), -65504.0, 65504.0);
+		x = x.add(residual);
+		// x = np.clip(x, -65504.0, 65504.0);
 
 		if (collectWeights) {
 			// Must have scores collected from attention
@@ -231,8 +233,8 @@ function precomputeRoPECache(
 	let angles = np.outer(positions, invFreq);
 	angles = np.concatenate([angles.ref, angles], -1);
 
-	const cos = np.cos(angles.ref).astype(DType.Float16);
-	const sin = np.sin(angles).astype(DType.Float16);
+	const cos = np.cos(angles.ref).astype(DType.Float32);
+	const sin = np.sin(angles).astype(DType.Float32);
 
 	return {
 		cos,
