@@ -102,6 +102,8 @@ export function runGemma3Step(
 	const { slidingWindowSlots, slidingWindowMask, globalSlots, globalMask, sequencePositions } =
 		precomputeSlotsAndMasks(position, S, newCapacity, isPrefill);
 
+	const { cos, sin } = precomputeRoPECache(position, S, HEAD_DIM, isPrefill);
+
 	for (let i = 0; i < layers.length; i++) {
 		// If kv cache is not large enough, expand it to next multiple of CACHE_EXPANSION_SIZE.
 		if (!isSlidingAttention(i) && newCapacity > kvCaches[i].k.shape[0]) {
@@ -123,8 +125,9 @@ export function runGemma3Step(
 			x,
 			position,
 			mask.ref,
+			cos.ref,
+			sin.ref,
 			isPrefill,
-			isSlidingAttention(i),
 			collectWeights,
 		);
 		x = out[0];
@@ -190,8 +193,9 @@ export const runDecoderLayer = jit(
 		x: np.Array,
 		position: np.Array,
 		mask: np.Array,
+		cos: np.Array,
+		sin: np.Array,
 		isPrefill: boolean,
-		isSlidingAttention: boolean = false,
 		collectWeights: boolean = false,
 	): [np.Array, KVCache] | [np.Array, KVCache, np.Array] {
 		let residual = x.ref;
@@ -203,8 +207,9 @@ export const runDecoderLayer = jit(
 			x,
 			position,
 			mask,
+			cos,
+			sin,
 			isPrefill,
-			isSlidingAttention,
 			collectWeights,
 		);
 		x = out[0];
@@ -226,7 +231,7 @@ export const runDecoderLayer = jit(
 
 		return [x, out[1]];
 	},
-	{ staticArgnums: [6, 7, 8] },
+	{ staticArgnums: [8, 9] },
 );
 
 export type Gemma3Attention = {
@@ -285,31 +290,38 @@ const precomputeSlotsAndMasks = jit(
 	},
 );
 
-function precomputeRoPECache(
-	offset: np.Array,
-	seqLen: number,
-	headDim: number,
-	base: number,
-): {
-	cos: np.Array;
-	sin: np.Array;
-} {
-	const invFreq = np.exp(
-		np.arange(0, headDim, 2, { dtype: DType.Float32 }).mul(-Math.log(base) / headDim),
-	);
-	const positions = np.arange(seqLen).add(offset);
+const precomputeRoPECache = jit(
+	function precomputeRoPECache(
+		offset: np.Array,
+		seqLen: number,
+		headDim: number,
+		isSlidingAttention: boolean,
+	): {
+		cos: np.Array;
+		sin: np.Array;
+	} {
+		const base = isSlidingAttention ? 10000 : 1000000;
 
-	let angles = np.outer(positions, invFreq);
-	angles = np.concatenate([angles.ref, angles], -1);
+		const invFreq = np.exp(
+			np.arange(0, headDim, 2, { dtype: DType.Float32 }).mul(-Math.log(base) / headDim),
+		);
+		const positions = np.arange(seqLen).add(offset);
 
-	const cos = np.cos(angles.ref).astype(DType.Float32);
-	const sin = np.sin(angles).astype(DType.Float32);
+		let angles = np.outer(positions, invFreq);
+		angles = np.concatenate([angles.ref, angles], -1);
 
-	return {
-		cos,
-		sin,
-	};
-}
+		const cos = np.cos(angles.ref).astype(DType.Float32);
+		const sin = np.sin(angles).astype(DType.Float32);
+
+		return {
+			cos,
+			sin,
+		};
+	},
+	{
+		staticArgnums: [1, 2, 3],
+	},
+);
 
 function rotateHalf(x: np.Array) {
 	const half = x.shape.slice(-1)[0] / 2;
@@ -334,8 +346,9 @@ export function runAttention(
 	x: np.Array, // [S, 640]
 	position: np.Array, // scalar, current position in the sequence
 	mask: np.Array, // [S, S], causal and sliding window attention mask
+	cos: np.Array,
+	sin: np.Array,
 	isPrefill: boolean,
-	isSlidingAttention: boolean = false,
 	collectWeights: boolean = false,
 ): [np.Array, KVCache] | [np.Array, KVCache, np.Array] {
 	const S = x.shape[0];
@@ -345,8 +358,6 @@ export function runAttention(
 	let v = runLinear(vProj, x); // [S, 256]
 
 	// Apply RoPE
-	const base = isSlidingAttention ? 10000 : 1000000;
-	const { cos, sin } = precomputeRoPECache(position.ref, S, HEAD_DIM, base);
 	q = applyRoPE(q, cos.ref, sin.ref);
 	k = applyRoPE(k, cos, sin);
 
