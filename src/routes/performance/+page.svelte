@@ -84,7 +84,7 @@
 		const start = performance.now();
 		console.log(`Start: ${start}`);
 		const output = await generator(messages, {
-			max_new_tokens: 512,
+			max_new_tokens: 20,
 			do_sample: false,
 			streamer: new TextStreamer(generator.tokenizer, {
 				skip_prompt: true,

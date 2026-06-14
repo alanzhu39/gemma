@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { runDouble } from "$lib/webgpu/double";
+	import { runIndexing } from "$lib/webgpu/indexing";
 	import { defaultDevice, init, jit, setDebug } from "@jax-js/jax";
 	import { nn, numpy as np } from "@jax-js/jax";
 
@@ -44,5 +46,19 @@
 	}
 </script>
 
-<h1>Kernels Test</h1>
-<button onclick={runTest} style="cursor: pointer;">Test</button>
+<h1>Testing different WGSL kernels</h1>
+
+<button onclick={runTest}>Test JIT</button>
+
+<button onclick={runDouble}>Test Double</button>
+
+<button onclick={runIndexing}>Test Indexing</button>
+
+<style lang="scss">
+	button {
+		border: 1px solid black;
+		border-radius: 5px;
+		padding: 5px;
+		cursor: pointer;
+	}
+</style>
