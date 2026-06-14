@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { runDouble } from "$lib/webgpu/double";
 	import { runIndexing } from "$lib/webgpu/indexing";
+	import { runMandelbrot } from "$lib/webgpu/mandelbrot";
 	import { defaultDevice, init, jit, setDebug } from "@jax-js/jax";
 	import { nn, numpy as np } from "@jax-js/jax";
 
@@ -53,6 +54,8 @@
 <button onclick={runDouble}>Test Double</button>
 
 <button onclick={runIndexing}>Test Indexing</button>
+
+<button onclick={runMandelbrot}>Test Mandelbrot</button>
 
 <style lang="scss">
 	button {
