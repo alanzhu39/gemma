@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { runDouble } from "$lib/webgpu/double";
+	import { runHistogram, runHistogramCpu } from "$lib/webgpu/histogram";
 	import { runIndexing } from "$lib/webgpu/indexing";
 	import { runMandelbrot } from "$lib/webgpu/mandelbrot";
 	import { defaultDevice, init, jit, setDebug } from "@jax-js/jax";
@@ -56,6 +57,8 @@
 <button onclick={runIndexing}>Test Indexing</button>
 
 <button onclick={runMandelbrot}>Test Mandelbrot</button>
+
+<button onclick={() => runHistogramCpu().then(runHistogram)}>Test Histogram</button>
 
 <style lang="scss">
 	button {
