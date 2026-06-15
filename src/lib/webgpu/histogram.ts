@@ -53,9 +53,13 @@ function printHistogram(bins: number[]) {
 }
 
 export async function runHistogramCpu() {
+	console.log("CPU");
+
 	const imgData = await getImageDataFromUrl("cat.jpg");
 	const { width, height, data } = imgData;
 	const bins = new Array(numBins).fill(0);
+
+	const start = performance.now();
 	for (let x = 0; x < width; x++) {
 		for (let y = 0; y < height; y++) {
 			const offset = (y * width + x) * 4;
@@ -69,8 +73,8 @@ export async function runHistogramCpu() {
 			++bins[bin];
 		}
 	}
+	console.log(`CPU took ${performance.now() - start} ms`);
 
-	console.log("CPU");
 	printHistogram(bins);
 }
 
@@ -89,17 +93,21 @@ export async function runHistogram() {
 		return;
 	}
 
-	const workgroupSize = [1, 1, 1];
+	const workgroupSize = [256, 1, 1];
+	const dispatchSize = [Math.ceil(width / workgroupSize[0]), height] as const;
+	const numChunks = dispatchSize[0] * dispatchSize[1];
 
-	// Naive method: one thread per pixel, sum to buckets with atomic add
-	const module = device.createShaderModule({
+	const luminanceModule = device.createShaderModule({
 		label: "Per-pixel luminance",
 		code: /* wgsl */ `
-      const num_bins: u32 = ${numBins};  
+      const num_bins: u32 = ${numBins};
+      const num_chunks: u32 = ${numChunks};
+      const width: u32 = ${width};
+      const height: u32 = ${height};
 
-      @group(0) @binding(0) var<storage, read_write> bins: array<atomic<u32>>;
+      var<workgroup> bins: array<atomic<u32>, num_bins>;
+      @group(0) @binding(0) var<storage, read_write> chunks: array<array<u32, num_bins>, num_chunks>;
       @group(0) @binding(1) var<storage, read_write> img_data: array<u32>;
-      @group(0) @binding(2) var<storage, read_write> debug: array<f32>;
 
       const kSRGBLuminanceFactors = vec3f(0.2126, 0.7152, 0.0722);
       fn srgbLuminance(color: vec3f) -> f32 {
@@ -109,80 +117,154 @@ export async function runHistogram() {
       @compute @workgroup_size(${workgroupSize})
       fn luminance(
         @builtin(global_invocation_id) global_invocation_id: vec3u,
-        @builtin(num_workgroups) num_workgroups: vec3u
+        @builtin(workgroup_id) workgroup_id: vec3u,
+        @builtin(num_workgroups) num_workgroups: vec3u,
+        @builtin(local_invocation_index) local_invocation_index: u32
       ) {
-        let offset = 4 * (global_invocation_id.x + global_invocation_id.y * num_workgroups.x);
-        let r: f32 = f32(img_data[offset + 0]) / 255f;
-        let g: f32 = f32(img_data[offset + 1]) / 255f;
-        let b: f32 = f32(img_data[offset + 2]) / 255f;
-        let v: f32 = srgbLuminance(vec3f(r, g, b));
-        debug[offset] = f32(offset);
-        let bin: u32 = min(num_bins - 1u, u32(v * f32(num_bins)));
-        atomicAdd(&bins[bin], 1u);
+        let x = global_invocation_id.x;
+        let y = global_invocation_id.y;
+        if (x < width && y < height) {
+          let offset = x + y * width;
+          let packed: u32 = img_data[offset];
+          const mask: u32 = 0xFFu;
+          let r: f32 = f32(packed & mask) / 255f;
+          let g: f32 = f32((packed >> 8u) & mask) / 255f;
+          let b: f32 = f32((packed >> 16u) & mask) / 255f;
+          let v: f32 = srgbLuminance(vec3f(r, g, b));
+          let bin: u32 = min(num_bins - 1u, u32(v * f32(num_bins)));
+          atomicAdd(&bins[bin], 1u);
+        }
+
+        workgroupBarrier();
+
+        if (local_invocation_index < num_bins) {
+          let chunk_index = workgroup_id.x + workgroup_id.y * num_workgroups.x;
+          chunks[chunk_index][local_invocation_index] = atomicLoad(&bins[local_invocation_index]);
+        }
       }
     `,
 	});
 
-	const pipeline = device.createComputePipeline({
-		label: "Mandelbrot pipeline",
+	const luminancePipeline = device.createComputePipeline({
+		label: "Luminance pipeline",
 		layout: "auto",
-		compute: { module },
+		compute: { module: luminanceModule },
 	});
 
-	// Create buffers
+	// Each workgroup processes all the bins, so workgroup size here should be num_bins...
+	// We control the number of dispatches so that each workgroup sums two elements, striding correctly
+	const sumModule = device.createShaderModule({
+		label: "Sum bins across chunks",
+		code: /* wgsl */ `
+      const num_bins: u32 = ${numBins};
+      const num_chunks: u32 = ${numChunks};
+
+      @group(0) @binding(0) var<storage, read_write> chunks: array<array<u32, num_bins>, num_chunks>;
+      @group(0) @binding(1) var<uniform> stride: u32;
+      
+      @compute @workgroup_size(num_bins, 1, 1)
+      fn parallelSum(
+        @builtin(workgroup_id) workgroup_id: vec3u,
+        @builtin(local_invocation_index) local_invocation_index: u32
+      ) {
+        let chunk0 = workgroup_id.x * stride * 2;
+        let chunk1 = chunk0 + stride;
+        
+        if (chunk1 < num_chunks) {
+          chunks[chunk0][local_invocation_index] += chunks[chunk1][local_invocation_index];
+        }
+      }
+    `,
+	});
+
+	const sumPipeline = device.createComputePipeline({
+		label: "Sum pipeline",
+		layout: "auto",
+		compute: { module: sumModule },
+	});
+
+	// Work buffers
 	const workUsage =
 		GPUBufferUsage.STORAGE | // 1. storage address_space
 		GPUBufferUsage.COPY_SRC; // 2. copy source for copying to read buffers
-	const binsWork = device.createBuffer({ size: 4 * numBins, usage: workUsage });
+
+	const chunksWork = device.createBuffer({ size: 4 * numBins * numChunks, usage: workUsage });
+
 	const imgDataWork = device.createBuffer({
 		size: 4 * width * height * 4,
 		usage: workUsage | GPUBufferUsage.COPY_DST,
 	});
-	const debugWork = device.createBuffer({
-		size: 4 * width * height,
-		usage: workUsage,
-	});
-	device.queue.writeBuffer(imgDataWork, 0, Uint32Array.from(data));
+	device.queue.writeBuffer(imgDataWork, 0, data);
 
-	const bindGroup = device.createBindGroup({
-		label: "Work buffers",
-		layout: pipeline.getBindGroupLayout(0),
-		entries: [
-			{ binding: 0, resource: binsWork },
-			{ binding: 1, resource: imgDataWork },
-			{ binding: 2, resource: debugWork },
-		],
-	});
-
-	// To read we:
+	// Read buffers
 	const readUsage =
 		GPUBufferUsage.COPY_DST | // 1. copy from work buffer to read buffer
 		GPUBufferUsage.MAP_READ; // 2. read from mapped array
-	const binsRead = device.createBuffer({ size: binsWork.size, usage: readUsage });
-	const debugRead = device.createBuffer({ size: debugWork.size, usage: readUsage });
+	const chunksRead = device.createBuffer({ size: chunksWork.size, usage: readUsage });
 
+	// Bind groups
+	const luminanceBindGroup = device.createBindGroup({
+		label: "Work buffers",
+		layout: luminancePipeline.getBindGroupLayout(0),
+		entries: [
+			{ binding: 0, resource: chunksWork },
+			{ binding: 1, resource: imgDataWork },
+		],
+	});
+
+	const sumBindGroups = [];
+	const numSteps = Math.ceil(Math.log2(numChunks));
+	for (let i = 0; i < numSteps; i++) {
+		const strideBuffer = device.createBuffer({
+			size: 4,
+			usage: GPUBufferUsage.UNIFORM,
+			mappedAtCreation: true,
+		});
+		new Uint32Array(strideBuffer.getMappedRange()).set([2 ** i]);
+		strideBuffer.unmap();
+
+		sumBindGroups.push(
+			device.createBindGroup({
+				label: `sum bind group ${i}`,
+				layout: sumPipeline.getBindGroupLayout(0),
+				entries: [
+					{ binding: 0, resource: chunksWork },
+					{ binding: 1, resource: strideBuffer },
+				],
+			}),
+		);
+	}
+
+	// Command encoder
 	const encoder = device.createCommandEncoder();
+
 	const pass = encoder.beginComputePass();
-	pass.setPipeline(pipeline);
-	pass.setBindGroup(0, bindGroup);
-	pass.dispatchWorkgroups(width, height);
+	pass.setPipeline(luminancePipeline);
+	pass.setBindGroup(0, luminanceBindGroup);
+	pass.dispatchWorkgroups(...dispatchSize);
+
+	pass.setPipeline(sumPipeline);
+	for (let i = 0; i < sumBindGroups.length; i++) {
+		const stride = 2 ** i;
+		pass.setBindGroup(0, sumBindGroups[i]);
+		pass.dispatchWorkgroups(Math.ceil(numChunks / (stride * 2)));
+	}
 	pass.end();
-	encoder.copyBufferToBuffer(binsWork, 0, binsRead, 0, binsRead.size);
-	encoder.copyBufferToBuffer(debugWork, 0, debugRead, 0, debugRead.size);
+
+	encoder.copyBufferToBuffer(chunksWork, 0, chunksRead, 0, chunksRead.size);
 
 	const commandBuffer = encoder.finish();
+
+	const start = performance.now();
 	device.queue.submit([commandBuffer]);
 
 	// Read results
-	await binsRead.mapAsync(GPUMapMode.READ);
-	await debugRead.mapAsync(GPUMapMode.READ);
+	await chunksRead.mapAsync(GPUMapMode.READ);
+	console.log(`WebGPU took ${performance.now() - start} ms`);
 
-	const result = new Uint32Array(binsRead.getMappedRange().slice());
-	const debug = new Float32Array(debugRead.getMappedRange().slice());
-	console.log(debug);
+	const result = new Uint32Array(chunksRead.getMappedRange()).slice(0, numBins);
 
-	binsRead.destroy();
-	debugRead.destroy();
+	chunksRead.destroy();
 
 	// Log output
 	console.log("WebGPU");
