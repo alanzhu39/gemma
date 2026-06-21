@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { runDouble } from "$lib/webgpu/double";
+	import { runAttentionJaxJs, runFlashAttention } from "$lib/webgpu/flashattention";
 	import { runHistogram, runHistogramCpu } from "$lib/webgpu/histogram";
 	import { runIndexing } from "$lib/webgpu/indexing";
 	import { runMandelbrot } from "$lib/webgpu/mandelbrot";
+	import { runMatmulJaxJs } from "$lib/webgpu/matmul";
 	import { defaultDevice, init, jit, setDebug } from "@jax-js/jax";
 	import { nn, numpy as np } from "@jax-js/jax";
 
@@ -52,6 +54,8 @@
 
 <button onclick={runTest}>Test JIT</button>
 
+<button onclick={runMatmulJaxJs}>Test Matmul</button>
+
 <button onclick={runDouble}>Test Double</button>
 
 <button onclick={runIndexing}>Test Indexing</button>
@@ -59,6 +63,8 @@
 <button onclick={runMandelbrot}>Test Mandelbrot</button>
 
 <button onclick={() => runHistogramCpu().then(runHistogram)}>Test Histogram</button>
+
+<button onclick={() => runAttentionJaxJs().then(runFlashAttention)}>Test Attention</button>
 
 <style lang="scss">
 	button {
