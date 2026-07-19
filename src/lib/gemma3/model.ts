@@ -215,14 +215,12 @@ export const runDecoderLayer = jit(
 		x = out[0];
 		x = runRMSNorm(postAttentionLayernorm, x);
 		x = x.add(residual);
-		// x = np.clip(x, -65504.0, 65504.0);
 
 		residual = x.ref;
 		x = runRMSNorm(preFeedforwardLayernorm, x);
 		x = runMLP(mlp, x);
 		x = runRMSNorm(postFeedforwardLayernorm, x);
 		x = x.add(residual);
-		// x = np.clip(x, -65504.0, 65504.0);
 
 		if (collectWeights) {
 			// Must have scores collected from attention

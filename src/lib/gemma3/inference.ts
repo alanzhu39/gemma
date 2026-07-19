@@ -8,7 +8,7 @@ import {
 	type Linear,
 } from "./model";
 import { PreTrainedTokenizer } from "@huggingface/transformers";
-import { nn, numpy as np, profiler, tree } from "@jax-js/jax";
+import { nn, numpy as np, tree } from "@jax-js/jax";
 import type { AttentionWeights } from "../../routes/inference/context";
 
 /**
@@ -146,22 +146,6 @@ export async function generateOnce(
 	return [tokensAr.js().concat(predictedToken.js()), attentionWeights];
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function countMethodCalls(cls: any, functionName: string): () => number {
-	const method = cls.prototype[functionName];
-	let callCount = 0;
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	cls.prototype[functionName] = function (...args: any[]) {
-		callCount++;
-		return method.apply(this, args);
-	};
-	return () => {
-		// Restore original method
-		cls.prototype[functionName] = method;
-		return callCount;
-	};
-}
-
 // Run inference for model
 export function runInference(
 	model: Gemma3,
@@ -181,33 +165,15 @@ export function runInference(
 	const generatedTokens: number[] = [];
 	let nextInput: np.Array = tokensAr;
 	for (let i = 0; i < steps; i++) {
-		// const shouldProfile = false;
-		const shouldProfile = i == 6;
-		let dispatchCount = () => 0;
-		let bufferCreateCount = () => 0;
-		if (shouldProfile) {
-			profiler.startTrace();
-			dispatchCount = countMethodCalls(GPUComputePassEncoder, "dispatchWorkgroups");
-			bufferCreateCount = countMethodCalls(GPUDevice, "createBuffer");
-		}
-
 		const { latent, state: nextState } = runGemma3Step(tree.ref(model), state, nextInput);
 
 		// Project back to token space
 		const logits = runLinear({ weight: model.tokenEmbed.ref }, latent.slice([-1]).flatten());
 
 		// Decode tokens
-		// const predictedToken = np.argmax(nn.softmax(logits));
-		const predictedToken = np.argmax(logits);
+		const predictedToken = np.argmax(nn.softmax(logits));
 		nextInput = predictedToken.ref.slice(null);
 		generatedTokens.push(predictedToken.js());
-
-		if (shouldProfile) {
-			profiler.stopTrace();
-			console.log(
-				`jax-js dispatch count: ${dispatchCount()}, buffer creates: ${bufferCreateCount()}`,
-			);
-		}
 
 		state = nextState;
 
