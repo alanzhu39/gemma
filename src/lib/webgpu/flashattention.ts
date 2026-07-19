@@ -1,6 +1,6 @@
 import { defaultDevice, DType, init, nn, numpy as np } from "@jax-js/jax";
 
-const N = 3000;
+const N = 2000;
 const d = 256;
 
 async function getInputs() {
@@ -39,8 +39,8 @@ export async function runAttentionJaxJs() {
 	);
 	console.log(out.shape);
 	const start = performance.now();
-	// console.log(await out.data());
-	await out.data();
+	console.log(await out.data());
+	// await out.data();
 	console.log(`jax-js took ${performance.now() - start} ms`);
 }
 
@@ -69,10 +69,13 @@ export async function runFlashAttention() {
 	const dtypeBytes = 4; // f32 = 4 bytes
 	const M = maxWorkgroupStorage / dtypeBytes;
 	const [N, d] = q.shape;
-	const Br = Math.min(d, Math.ceil(M / (4 * d))); // Number of query rows per tile
+	// const Br = Math.min(d, Math.ceil(M / (4 * d))); // Number of query rows per tile
+	const Br = 256;
 	const Tr = Math.ceil(N / Br); // Number of query tiles
 	const Bc = Math.ceil(M / (4 * d)); // Number of kv column rows per tile
 	const Tc = Math.ceil(N / Bc); // Number of kv tiles
+
+	console.log(Br, Bc, Tr, Tc);
 
 	const workgroupSize = [Br, 1, 1];
 	const dispatchSize = [Tr, 1, 1] as const;
@@ -236,5 +239,5 @@ export async function runFlashAttention() {
 	// Log output
 	console.log("WebGPU");
 	console.log(result.length);
-	// console.log(result);
+	console.log(result);
 }
