@@ -102,7 +102,8 @@ export function runGemma3Step(
 	const { slidingWindowSlots, slidingWindowMask, globalSlots, globalMask, sequencePositions } =
 		precomputeSlotsAndMasks(position, S, newCapacity, isPrefill);
 
-	const { cos, sin } = precomputeRoPECache(position, S, HEAD_DIM, isPrefill);
+	const ropeSliding = precomputeRoPECache(position, S, HEAD_DIM, true);
+	const ropeGlobal = precomputeRoPECache(position, S, HEAD_DIM, false);
 
 	for (let i = 0; i < layers.length; i++) {
 		// If kv cache is not large enough, expand it to next multiple of CACHE_EXPANSION_SIZE.
@@ -117,6 +118,7 @@ export function runGemma3Step(
 
 		const slotPositions = isSlidingAttention(i) ? slidingWindowSlots : globalSlots;
 		const mask = isSlidingAttention(i) ? slidingWindowMask : globalMask;
+		const { cos, sin } = isSlidingAttention(i) ? ropeSliding : ropeGlobal;
 
 		const out = runDecoderLayer(
 			layers[i],
