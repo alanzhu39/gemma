@@ -105,7 +105,7 @@ export async function* streamGenerate(
 		};
 
 		state = nextState;
-		nextInput = np.array([tokenId]);
+		nextInput = np.array([tokenId]).astype(np.uint32);
 	}
 }
 
@@ -173,7 +173,7 @@ export function runInference(
 		// Decode tokens
 		const predictedToken = np.argmax(nn.softmax(logits));
 		nextInput = predictedToken.ref.slice(null);
-		generatedTokens.push(predictedToken.ref.js());
+		generatedTokens.push(predictedToken.js());
 
 		state = nextState;
 
