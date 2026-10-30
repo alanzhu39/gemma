@@ -68,6 +68,22 @@ const gpu = await page.evaluate(async () => {
 	};
 });
 
+// Adapter limits are capability; device limits are the contract a kernel actually
+// gets, and they differ a lot. A bare requestDevice() on this card yields 256 MB
+// and 16 KiB against an adapter advertising 4.29 GB and 48 KiB. Probes that used
+// a bare device produced impossible bandwidth numbers for exactly that reason.
+const deviceLimits = await page
+	.evaluate(async () => {
+		const a = await navigator.gpu.requestAdapter();
+		if (!a) return null;
+		const d = await a.requestDevice();
+		return {
+			maxBufferSize: d.limits.maxBufferSize,
+			maxComputeWorkgroupStorageSize: d.limits.maxComputeWorkgroupStorageSize,
+		};
+	})
+	.catch(() => null);
+
 await browser.close();
 server.close();
 
@@ -103,13 +119,24 @@ if (gpu.available) {
 		const swLimits = gpu.limits.maxComputeWorkgroupStorageSize <= 32768 && gpu.limits.maxBufferSize <= 1073741824;
 		console.log(`WG storage:         ${gpu.limits.maxComputeWorkgroupStorageSize} bytes`);
 		console.log(`maxBufferSize:      ${(gpu.limits.maxBufferSize / 1e9).toFixed(2)} GB`);
+		if (deviceLimits) {
+			console.log(
+				`device limits:      ${(deviceLimits.maxBufferSize / 1e9).toFixed(2)} GB, ` +
+					`${deviceLimits.maxComputeWorkgroupStorageSize} B WG storage (bare requestDevice)`,
+			);
+			if (deviceLimits.maxBufferSize < gpu.limits.maxBufferSize) {
+				console.log("                    ^ below adapter limits: kernels must request raised limits");
+			}
+		}
 		if (swLimits) {
 			console.log("");
 			console.log("!! These limits match Dawn's SwiftShader defaults, which means");
 			console.log("!! WebGPU is NOT on the GPU even if ANGLE below reports one.");
 			console.log("!! ANGLE (OpenGL) and Dawn (WebGPU) pick backends independently.");
 		}
-		console.log(`maxBufferSize:      ${(gpu.limits.maxBufferSize / 1e9).toFixed(2)} GB`);
+		// yields 256 MB and 16 KiB, versus 4.29 GB and 48 KiB when raised. Probes
+		// that used a bare device produced impossible bandwidth numbers for that
+		// reason, so report both.
 		console.log(`maxStorageBinding:  ${(gpu.limits.maxStorageBufferBindingSize / 1e9).toFixed(2)} GB`);
 		console.log(`workgroup storage:  ${gpu.limits.maxComputeWorkgroupStorageSize} bytes`);
 	}
