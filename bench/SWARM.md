@@ -265,7 +265,9 @@ fallback and was contended. Only the dispatch and byte rankings are exact.
 Decode at batch 1 is a streaming problem: every token must read the weights.
 From the actual safetensors shapes, at f16, with ctx 1024:
 
-| traffic per token | MiB | share |
+All bandwidths below are **decimal GB/s**, which is NVIDIA's convention for the
+1060's 192 GB/s. Mixing GiB/s and GB/s shifts these figures by ~7%, which is
+enough to matter if the number is used to retarget a goal.
 | --- | --- | --- |
 | **logits matvec (tied embedding, 262144x640)** | **320.0** | **61%** |
 | 18 decoder layers of weights | 191.4 | 37% |
@@ -276,15 +278,24 @@ So two thirds of every decode step is one matrix-vector product against the
 vocabulary table. That has consequences:
 
 - **A bandwidth floor exists and is not negotiable by kernel work.** On a
-  GTX 1060 (~192 GB/s) the floor is ~2.65 ms/token ≈ **377 tok/s**. At 1 TB/s it
-  is ~1962 tok/s. No amount of fusion, dispatch batching or tiling beats it; the
+  GTX 1060 (192 GB/s) the floor is ~2.97 ms/token ≈ **351 tok/s**. At 1 TB/s it
+  is ~1827 tok/s. No amount of fusion, dispatch batching or tiling beats it; the
   kernel already reads its own weights exactly once in one dispatch.
+- **The floor is a ceiling, not a forecast.** A launch-bound engine lands far
+  below it. For calibration: a 270M f16 model on a 1060 realistically manages
+  ~30-40 tok/s, roughly 10% of the floor. If the measured baseline is ~35, then
+  2x = 70 is only 20% of the floor and is reachable by kernel work alone. So the
+  floor does not threaten the target — but `baseline / floor` must still be
+  computed on the first real GPU run before anyone commits to the number.
 - **Check the target against the floor before chasing it.** A 2x decode target is
   reachable only if the measured baseline sits meaningfully below the floor for
   that GPU. If the baseline is already close, 2x is arithmetically impossible
   without reducing bytes moved.
 - **The one real lever is quantisation of the tied embedding.** int8 halves the
-  table to 160 MiB, int4 to 80 MiB. Because the embedding is tied, quantising the
+  table to 160 MiB, int4 to 80 MiB. Note that quantising the embedding *alone*
+  is not enough to double the floor: int4-embed gives ~650 tok/s against a 702
+  tok/s requirement for 2x of the f16 floor. Quantising layer weights too is what
+  clears it. Because the embedding is tied, quantising the
   output head also quantises the input gather, which reads a single row and does
   not care how wide the table is — nearly all the saving lands on the matvec.
   This is a correctness/golden task before it is a performance task: it changes
