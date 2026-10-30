@@ -23,9 +23,12 @@ const ENV_FILE = path.join(HERE, ".env.local");
 // Config
 // ---------------------------------------------------------------------------
 
-const PROVIDER = process.env.SWARM_PROVIDER ?? "claude";
-const MODEL = process.env.SWARM_MODEL ?? "claude-opus-5-5";
-const MODE = process.env.SWARM_MODE ?? "auto";
+// The swarm runs on DeepSeek via OpenCode. Set SWARM_PROVIDER/SWARM_MODEL to
+// override. Keeping these as defaults matters: launching four agents on the
+// wrong provider silently burns a different quota and dies mid-run.
+const PROVIDER = process.env.SWARM_PROVIDER ?? "opencode";
+const MODEL = process.env.SWARM_MODEL ?? "deploy/deepseek-ai/deepseek-v4.1-flash-1017";
+const MODE = process.env.SWARM_MODE ?? "build";
 
 /** Shared context every agent needs. Kept here so roles stay short. */
 function preamble(role, token) {
