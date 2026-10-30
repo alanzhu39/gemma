@@ -50,17 +50,33 @@ export function chromeArgs({ software = false } = {}) {
  * just point the loader at them.
  */
 export function chromeEnv() {
+	const env = {};
+
 	const a = path.join(HERE, ".cache", "chrome-deps", "usr", "lib", "x86_64-linux-gnu");
 	const b = path.join(HERE, ".cache", "chrome-deps", "lib", "x86_64-linux-gnu");
 	const parts = [a, b].filter((p) => fs.existsSync(p));
-	if (!parts.length) return {};
-	const existing = process.env.LD_LIBRARY_PATH ? `:${process.env.LD_LIBRARY_PATH}` : "";
-	// NVK refuses to probe Pascal unless this opt-in is set; without it the
-	// driver reports zero devices and Chromium silently uses SwiftShader.
-	return {
-		LD_LIBRARY_PATH: parts.join(":") + existing,
-		NVK_I_WANT_A_BROKEN_VULKAN_DRIVER: "1",
-	};
+	if (parts.length) {
+		const existing = process.env.LD_LIBRARY_PATH ? `:${process.env.LD_LIBRARY_PATH}` : "";
+		env.LD_LIBRARY_PATH = parts.join(":") + existing;
+	}
+
+	// NVK refuses to probe Pascal unless this opt-in is set. It is only read by
+	// Mesa's NVK, so it is harmless (and ignored) with the proprietary driver.
+	// Set unconditionally: an earlier version returned early when the Chrome
+	// dependency bundle was absent, silently dropping it and reporting a software
+	// renderer on a working GPU.
+	env.NVK_I_WANT_A_BROKEN_VULKAN_DRIVER = "1";
+
+	// Prefer the proprietary NVIDIA ICD when present. Mesa's nouveau/lvp ICDs
+	// also exist on this box, and the loader would otherwise be free to pick the
+	// software one. Do not filter to nouveau specifically - that pinned the
+	// harness to a driver that is no longer in use.
+	const nvidiaIcd = "/usr/share/vulkan/icd.d/nvidia_icd.json";
+	if (fs.existsSync(nvidiaIcd)) {
+		env.VK_ICD_FILENAMES = nvidiaIcd;
+	}
+
+	return env;
 }
 
 /**

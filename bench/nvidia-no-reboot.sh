@@ -32,6 +32,11 @@ fi
 KREL="$(uname -r)"
 echo "running kernel: $KREL"
 
+if lsmod | grep -q '^nvidia '; then
+	echo "nvidia module is already loaded; verifying instead of building"
+	nvidia-smi --query-gpu=name,clocks.sm,clocks.max.sm --format=csv && exit 0
+fi
+
 echo "==> 1/5 check the header packages are present and for the right architecture"
 ARCH="$(dpkg --print-architecture)"
 for p in "${PKGS[@]}"; do
@@ -75,9 +80,20 @@ fi
 echo "    headers in place for $KREL"
 
 echo "==> 3/5 build the NVIDIA module for $KREL"
-"$DKMS" install nvidia/550.163.01 -k "$KREL" || {
+# Debian packages the module as `nvidia-current`, not `nvidia`, and puts the
+# sources in /usr/src/nvidia-current-<ver>. Naming it `nvidia` here fails with
+# "Could not find module source directory" even though everything is present.
+DKMS_NAME="$(ls /usr/src | grep -E '^nvidia-current-' | head -1 | sed 's/-[0-9].*//')"
+DKMS_VER="$(ls /usr/src | grep -E '^nvidia-current-' | head -1 | sed 's/^nvidia-current-//')"
+if [ -z "$DKMS_NAME" ]; then
+	echo "no nvidia-current source tree in /usr/src" >&2
+	exit 1
+fi
+echo "    dkms module $DKMS_NAME/$DKMS_VER"
+
+"$DKMS" install "$DKMS_NAME/$DKMS_VER" -k "$KREL" || {
 	echo "--- build failed; log follows ---" >&2
-	tail -40 "/var/lib/dkms/nvidia/550.163.01/build/make.log" >&2 || true
+	tail -40 "/var/lib/dkms/$DKMS_NAME/$DKMS_VER/build/make.log" >&2 || true
 	exit 1
 }
 "$DKMS" status || true
@@ -87,7 +103,7 @@ if [ -z "$KO" ]; then
 	echo "module not produced - not loading anything" >&2
 	exit 1
 fi
-echo "    built $KO"
+echo "    built $(basename "$KO")"
 
 echo "==> 4/5 load it"
 modprobe nvidia
