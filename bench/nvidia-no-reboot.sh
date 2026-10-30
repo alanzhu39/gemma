@@ -18,7 +18,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKGS=(
 	"$HERE/.cache/nvidia-pkgs/hdr101.deb"
 	"$HERE/.cache/nvidia-pkgs/linux-headers-6.12.101_deb13-common.deb"
-	"$HERE/.cache/nvidia-pkgs/linux-kbuild-6.12.101_deb13.deb"
+	"$HERE/.cache/nvidia-pkgs/kbuild-amd64.deb"
 )
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -29,18 +29,28 @@ fi
 KREL="$(uname -r)"
 echo "running kernel: $KREL"
 
-echo "==> 1/5 check the header packages are present"
+echo "==> 1/5 check the header packages are present and for the right architecture"
+ARCH="$(dpkg --print-architecture)"
 for p in "${PKGS[@]}"; do
 	if [ ! -f "$p" ]; then
 		echo "missing $p" >&2
-		echo "re-run the download step documented in bench/NVIDIA-DRIVER-SWAP.md" >&2
 		exit 1
 	fi
+	# Snapshot's binary index lists every architecture, and taking the first
+	# entry silently downloaded an armel package once. Check before installing.
+	pa="$(dpkg-deb -f "$p" Architecture)"
+	if [ "$pa" != "$ARCH" ] && [ "$pa" != "all" ]; then
+		echo "$p is for $pa, need $ARCH or all" >&2
+		exit 1
+	fi
+	echo "    ok $(basename "$p") ($pa)"
 done
 
 echo "==> 2/5 install headers matching the RUNNING kernel (no upgrade)"
 dpkg -i "${PKGS[@]}" || {
-	echo "dpkg failed; the packages may require an exact image/version match" >&2
+	# A half-configured header package blocks the build, so fail loudly here
+	# rather than at the compile step.
+	echo "dpkg failed; run 'sudo dpkg --configure -a' then retry" >&2
 	exit 1
 }
 
