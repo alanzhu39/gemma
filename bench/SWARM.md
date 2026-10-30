@@ -139,3 +139,22 @@ A change is done when all of these are true:
 - [ ] The change is committed in small commits with messages saying what the
       number was before and after.
 - [ ] Any library patch is reproducible from a clean `npm install`.
+
+## Current environment status
+
+Check `node bench/preflight.mjs` before trusting any number.
+
+- **GPU access:** the host GPU (`/dev/dri/renderD128`) is `root:render`. If your
+  user is not in the `render` group, Chromium cannot see it and falls back to
+  SwiftShader, a CPU rasteriser.
+- **Consequence:** on the fallback, absolute throughput is CPU performance.
+  Only relative comparisons against another run at the same precision mean
+  anything, and a full suite takes hours. Prefer tiny scopes
+  (`--only prefill-128`)
+  while iterating.
+- **`shader-f16`:** SwiftShader lacks it, so the harness widens weights to
+  float32 and records `precision: "f32"`. Results from f32 and f16 are not
+  comparable, and `bench/compare.mjs` refuses to mix them.
+- **Baseline:** `bench/baseline.json` must be recorded on the real GPU. Do not
+  record one while on the CPU fallback; it would bake CPU numbers in as the
+  target and make the gate meaningless.

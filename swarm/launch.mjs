@@ -245,16 +245,25 @@ function ensureWorktree(role) {
 		process.exit(1);
 	}
 	// Share the downloaded weights and unpacked Chrome libs: they are large and
-	// identical across agents.
-	for (const sub of [".cache"]) {
-		const from = path.join(ROOT, "bench", sub);
-		const to = path.join(dir, "bench", sub);
+	// identical across agents. node_modules is shared too — installing it per
+	// worktree would waste gigabytes and break the "one install" expectation.
+	for (const rel of [path.join("bench", ".cache"), "node_modules"]) {
+		const from = path.join(ROOT, rel);
+		const to = path.join(dir, rel);
 		if (fs.existsSync(from) && !fs.existsSync(to)) {
 			fs.mkdirSync(path.dirname(to), { recursive: true });
 			fs.symlinkSync(from, to, "dir");
 		}
 	}
+	// The SvelteKit typegen output is also shared; without it `svelte-check`
+	// and editors cannot resolve `$lib`.
+	const kitFrom = path.join(ROOT, ".svelte-kit");
+	const kitTo = path.join(dir, ".svelte-kit");
+	if (fs.existsSync(kitFrom) && !fs.existsSync(kitTo)) {
+		fs.symlinkSync(kitFrom, kitTo, "dir");
+	}
 	// Give each agent its own identity without committing tokens.
+	fs.mkdirSync(path.join(dir, "swarm"), { recursive: true });
 	fs.writeFileSync(
 		path.join(dir, "swarm", ".env.local"),
 		fs.readFileSync(ENV_FILE, "utf8"),
