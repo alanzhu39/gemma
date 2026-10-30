@@ -47,12 +47,33 @@ for p in "${PKGS[@]}"; do
 done
 
 echo "==> 2/5 install headers matching the RUNNING kernel (no upgrade)"
+# linux-kbuild depends on pahole (used for BTF). Without it dpkg leaves the
+# header packages unconfigured and the build silently has nothing to compile
+# against, so install it first.
+if ! command -v pahole >/dev/null 2>&1; then
+	apt-get install -y pahole || {
+		echo "could not install pahole (required by linux-kbuild)" >&2
+		exit 1
+	}
+fi
+
 dpkg -i "${PKGS[@]}" || {
 	# A half-configured header package blocks the build, so fail loudly here
 	# rather than at the compile step.
-	echo "dpkg failed; run 'sudo dpkg --configure -a' then retry" >&2
-	exit 1
+	echo "retrying dependency resolution" >&2
+	apt-get -f install -y || {
+		echo "dpkg failed; run 'sudo dpkg --configure -a' then retry" >&2
+		exit 1
+	}
 }
+
+# If anything is still unconfigured the build tree is incomplete, which shows up
+# much later as a confusing compile error. Fail here instead.
+if dpkg -l | grep -qE '^i[^i].*(linux-headers|linux-kbuild).*6\.12\.101'; then
+	echo "header packages are still not configured:" >&2
+	dpkg -l | grep -E 'linux-headers|linux-kbuild' >&2
+	exit 1
+fi
 
 if [ ! -d "/lib/modules/$KREL/build" ]; then
 	echo "/lib/modules/$KREL/build still missing - aborting before touching the module" >&2
