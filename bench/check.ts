@@ -147,12 +147,24 @@ function maxAbsDiff(a: number[], b: number[]): number {
 	return m;
 }
 
-/** Relative error against the magnitude of the reference, which is scale-free. */
+/**
+ * Normalised error, scaled by the magnitude of the logits as a whole.
+ *
+ * An element-wise relative error is the wrong metric for logits. Most of a
+ * vocabulary sits near zero, and dividing by a reference of 0.0024 turns a
+ * 1e-5 absolute difference into a 0.004 "relative error" — a large-looking
+ * number produced entirely by the denominator.
+ *
+ * Normalising by the scale of the distribution instead (the largest |logit|)
+ * answers the question we actually care about: did the model's output change by
+ * a meaningful amount? A shifted or broken computation moves many logits by a
+ * visible fraction of the scale; a reordered summation moves them by 1e-7.
+ */
 function relativeError(a: number[], b: number[]): number {
+	const scale = Math.max(1e-3, ...b.map(Math.abs));
 	let worst = 0;
 	for (let i = 0; i < a.length; i++) {
-		const denom = Math.max(1e-3, Math.abs(b[i]));
-		worst = Math.max(worst, Math.abs(a[i] - b[i]) / denom);
+		worst = Math.max(worst, Math.abs(a[i] - b[i]) / scale);
 	}
 	return worst;
 }
