@@ -26,7 +26,7 @@ import {
 	createGemma3State,
 	fromSafetensors,
 	runGemma3Step,
-	runLinear,
+	runLogitsProjection,
 	type Gemma3,
 	type Gemma3State,
 } from "../src/lib/gemma3/model";
@@ -189,10 +189,7 @@ async function timeDecode(
 		const out = runGemma3Step(tree.ref(model), state, input);
 		state = out.state;
 		// Logits projection is part of a real generation loop, so include it.
-		const logits = runLinear(
-			{ weight: tree.ref(model).tokenEmbed },
-			out.latent.ref.slice([-1]).flatten(),
-		);
+		const logits = runLogitsProjection(model, out.latent.ref.slice([-1]).flatten());
 		await blockUntilReady(logits);
 		logits.dispose();
 		out.latent.dispose();
@@ -239,10 +236,7 @@ async function timeInterleaved(
 			const input = np.array([tokens[b]], { dtype: np.uint32 });
 			const out = runGemma3Step(tree.ref(model), states[b], input);
 			states[b] = out.state;
-			const logits = runLinear(
-				{ weight: tree.ref(model).tokenEmbed },
-				out.latent.ref.slice([-1]).flatten(),
-			);
+			const logits = runLogitsProjection(model, out.latent.ref.slice([-1]).flatten());
 			out.latent.dispose();
 			return logits;
 		});

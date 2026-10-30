@@ -28,5 +28,10 @@ export function loadModelF32(file: safetensors.File): Gemma3 {
 			shape: value.shape,
 		});
 	}
-	return safetensors.toNested(hydrated).model as Gemma3;
+	const model = safetensors.toNested(hydrated).model as Gemma3;
+	// Match the production loader: the contiguous transposed copy that the stock
+	// projection path reads. Without it the f32 harness would measure a different
+	// code path from the one the browser build runs.
+	model.tokenEmbedT = model.tokenEmbed.ref.transpose().mul(1) as np.Array;
+	return model;
 }

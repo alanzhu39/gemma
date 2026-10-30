@@ -19,9 +19,9 @@
  * Every result is checked against a CPU reference before timing, and anything
  * above the card's read ceiling is rejected as a measurement bug.
  */
-import { blockUntilReady, defaultDevice, init, numpy as np, tree } from "@jax-js/jax";
+import { blockUntilReady, defaultDevice, init, numpy as np } from "@jax-js/jax";
 import { safetensors } from "@jax-js/loaders";
-import { runLinear, runLogitsProjection, runLogitsStockPath } from "../../src/lib/gemma3/model";
+import { runLogitsProjection, runLogitsStockPath } from "../../src/lib/gemma3/model";
 import { loadModelF32 } from "../f32-model";
 
 const PEAK_GBPS = 192;
