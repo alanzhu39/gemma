@@ -287,6 +287,17 @@ export async function runBenchmarks(workloads: Workloads, opts: BenchOptions = {
 	const samples: Sample[] = [];
 	const want = (name: string) => !only?.length || only.some((o) => name.includes(o));
 
+	// Warm the GPU's clocks before any measurement. A Pascal card idles at
+	// ~139 MHz against a 1911 MHz boost and takes ~100 ms to ramp, so the first
+	// short workload is measured at idle clock. Observed as a 1.8x p90/min spread
+	// on prefill-128 while every longer workload was flat. One throwaway full-size
+	// prefill is enough to bring the clocks up.
+	onProgress("warming up the GPU clocks");
+	{
+		const biggest = workloads.prefill.reduce((a, b) => (b.tokens.length > a.tokens.length ? b : a));
+		for (let i = 0; i < 3; i++) await timePrefill(model, biggest.tokens);
+	}
+
 	// ---- prefill ----
 	for (const w of workloads.prefill) {
 		if (!want(w.name)) continue;
@@ -359,6 +370,11 @@ export async function runBenchmarks(workloads: Workloads, opts: BenchOptions = {
 				// Aggregate goodput across concurrent conversations.
 				totalTps: (1000 / s.median) * w.batchSize,
 				batchSupported: 0,
+				// Spread belongs here too: without it the batch numbers looked
+				// trustworthy while the prefill/decode ones were being gated.
+				minMs: s.min,
+				p90Ms: s.p90,
+				spread: s.spread,
 				runs: repeats,
 			},
 		});

@@ -3,84 +3,84 @@
     {
       "workload": "prefill-128",
       "kind": "prefill",
-      "ms": 833.1999998092651,
+      "ms": 114.09999990463257,
       "tokens": 128,
-      "tps": 153.62457996795675,
+      "tps": 1121.8229632514056,
       "detail": {
-        "minMs": 809.2000002861023,
-        "p90Ms": 848.7000002861023,
-        "meanMs": 828.3200000762939,
-        "spread": 1.049,
+        "minMs": 106.30000019073486,
+        "p90Ms": 191,
+        "meanMs": 126.98000001907349,
+        "spread": 1.797,
         "runs": 5
       }
     },
     {
       "workload": "prefill-512",
       "kind": "prefill",
-      "ms": 2739,
+      "ms": 442.30000019073486,
       "tokens": 512,
-      "tps": 186.9295363271267,
+      "tps": 1157.5853488112325,
       "detail": {
-        "minMs": 2722.699999809265,
-        "p90Ms": 2759.5,
-        "meanMs": 2739.1,
-        "spread": 1.014,
+        "minMs": 437.90000009536743,
+        "p90Ms": 447.59999990463257,
+        "meanMs": 441.9800000190735,
+        "spread": 1.022,
         "runs": 5
       }
     },
     {
       "workload": "prefill-1024",
       "kind": "prefill",
-      "ms": 6423.699999809265,
+      "ms": 1018.5,
       "tokens": 1024,
-      "tps": 159.4096860112404,
+      "tps": 1005.4000981836033,
       "detail": {
-        "minMs": 6395.099999904633,
-        "p90Ms": 6503.5,
-        "meanMs": 6431.35999994278,
-        "spread": 1.017,
+        "minMs": 1012.6000003814697,
+        "p90Ms": 1032,
+        "meanMs": 1019.3,
+        "spread": 1.019,
         "runs": 5
       }
     },
     {
       "workload": "decode-ctx128",
       "kind": "decode",
-      "ms": 1921.2000000029802,
+      "ms": 144.7718750089407,
       "tokens": 1,
-      "tps": 0.5205080158226363,
+      "tps": 6.907418999292804,
       "detail": {
         "contextLen": 128,
         "stepsPerRun": 32,
-        "minMs": 1917.4562499970198,
-        "p90Ms": 1921.6468750089407,
-        "spread": 1.002,
+        "minMs": 141.17499999701977,
+        "p90Ms": 163.45624999701977,
+        "spread": 1.158,
         "runs": 5
       }
     },
     {
       "workload": "decode-ctx1024",
       "kind": "decode",
-      "ms": 1934.2593750059605,
+      "ms": 140.40312500298023,
       "tokens": 1,
-      "tps": 0.5169937459896858,
+      "tps": 7.122348594297839,
       "detail": {
         "contextLen": 1024,
         "stepsPerRun": 32,
-        "minMs": 1932.0687500089407,
-        "p90Ms": 1934.4781250059605,
-        "spread": 1.001,
+        "minMs": 131.83750000596046,
+        "p90Ms": 149.72499999403954,
+        "spread": 1.136,
         "runs": 5
       }
     },
     {
       "workload": "batch-1",
       "kind": "batch",
-      "ms": 1918.637499988079,
+      "ms": 135.44374999403954,
       "tokens": 1,
-      "tps": 0.5212031975848556,
+      "tps": 7.383138757188921,
       "detail": {
         "batchSize": 1,
-        "totalTps": 0.5212031975848556,
+        "totalTps": 7.383138757188921,
         "batchSupported": 0,
         "runs": 5
       }
@@ -88,12 +88,12 @@
     {
       "workload": "batch-2",
       "kind": "batch",
-      "ms": 1916.6781250089407,
+      "ms": 126.22812500596046,
       "tokens": 1,
-      "tps": 0.5217360113583679,
+      "tps": 7.922164731138803,
       "detail": {
         "batchSize": 2,
-        "totalTps": 1.0434720227167358,
+        "totalTps": 15.844329462277607,
         "batchSupported": 0,
         "runs": 5
       }
@@ -101,12 +101,12 @@
     {
       "workload": "batch-4",
       "kind": "batch",
-      "ms": 1914.1437500044703,
+      "ms": 117.58437499403954,
       "tokens": 1,
-      "tps": 0.5224268031059133,
+      "tps": 8.504531321025357,
       "detail": {
         "batchSize": 4,
-        "totalTps": 2.089707212423653,
+        "totalTps": 34.01812528410143,
         "batchSupported": 0,
         "runs": 5
       }
@@ -119,24 +119,24 @@
     "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.8078.4 Safari/537.36",
     "backend": "webgpu",
     "adaptiveFallback": false,
-    "rendererString": "ANGLE (NVIDIA, Vulkan 1.3.305 (NVIDIA NVIDIA GeForce GTX 1060 6GB (NVK GP106) (0x00001C03)), NVK-25.0.0.7)",
+    "rendererString": "ANGLE (NVIDIA, Vulkan 1.3.277 (NVIDIA NVIDIA GeForce GTX 1060 6GB (0x00001C03)), NVIDIA-550.163.1.0)",
     "gpuDevices": [
-      "ANGLE (NVIDIA, Vulkan 1.3.305 (NVIDIA NVIDIA GeForce GTX 1060 6GB (NVK GP106) (0x00001C03)), NVK-25.0.0.7)"
+      "ANGLE (NVIDIA, Vulkan 1.3.277 (NVIDIA NVIDIA GeForce GTX 1060 6GB (0x00001C03)), NVIDIA-550.163.1.0)"
     ],
     "contention": {
       "method": "proc-cpu",
       "cores": 4,
-      "elapsedSec": 2313.4,
+      "elapsedSec": 178.2,
       "ownCpuSec": 2.1,
-      "otherCpuSec": 9207.1,
-      "otherUtilisation": 0.99,
+      "otherCpuSec": 697.3,
+      "otherUtilisation": 0.98,
       "quiet": false
     }
   },
-  "generatedAt": "2026-10-30T07:31:29.656Z",
+  "generatedAt": "2026-10-30T19:41:19.910Z",
   "git": {
-    "rev": "205c44e9c9e07d0bb5438dd42b60e4dee06848da",
+    "rev": "7fae42cbc8cb1fadaf68e39ca0e788764a237ad8",
     "branch": "perf",
-    "dirty": false
+    "dirty": true
   }
 }
