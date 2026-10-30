@@ -140,6 +140,31 @@ if (software) {
 	console.log("[check] software renderer: checking the f32 path only");
 }
 
+// Record every WebGPU error for the whole session.
+//
+// Without this, a validation error is a console line nobody reads and the run
+// still reports PASS. That is a live correctness hole: a buffer destroyed before
+// its command buffer executes produces a *silently zero* tensor, and only a
+// device error announces it. jax-js console.errors uncaptured errors
+// (webgpu-*.js:867) but nothing fails on them.
+await page.addInitScript(() => {
+	window.__gpuErrors = [];
+	// jax-js creates its own device, so intercept requestDevice and attach the
+	// listener to every device the page ever gets. A separate "listen(device)"
+	// helper would never be called by code we do not control.
+	const proto = GPUAdapter.prototype;
+	const original = proto.requestDevice;
+	proto.requestDevice = function (...args) {
+		const p = original.apply(this, args);
+		p.then((device) => {
+			device.addEventListener("uncapturederror", (e) => {
+				window.__gpuErrors.push(String(e.error?.message ?? e.error));
+			});
+		}).catch(() => {});
+		return p;
+	};
+});
+
 await page.goto(`${base}/bench/index.html`, { waitUntil: "load", timeout: 120_000 });
 
 await fsp.mkdir(GOLDEN_DIR, { recursive: true });
@@ -155,7 +180,6 @@ const evaluate = async (fn, arg) => {
 			const msg = String(e?.message ?? e);
 			if (attempt < 2 && /context was destroyed|navigation/i.test(msg)) {
 				console.warn("[check] page navigated mid-run; reloading and retrying once");
-				await page.goto(`${base}/bench/index.html`, { waitUntil: "load", timeout: 120_000 });
 				continue;
 			}
 			throw e;
@@ -226,6 +250,17 @@ try {
 			},
 			{ tolerance, DEFAULTS: DEFAULT_TOLERANCE, cls: deviceClass(rendererString) },
 		);
+
+		// Any GPU error at all fails the run. This is checked before the numeric
+		// comparison, because a corrupted computation can still land inside
+		// tolerance by luck, and a destroyed buffer yields zeros which may not
+		// reach the output at all.
+		const gpuErrors = await page.evaluate(() => window.__gpuErrors ?? []);
+		if (gpuErrors.length) {
+			console.error(`[check] ${gpuErrors.length} WebGPU error(s) during the run:`);
+			for (const e of gpuErrors.slice(0, 10)) console.error(`  - ${String(e).slice(0, 200)}`);
+			exitCode = 1;
+		}
 
 		for (const [label, result] of [
 			["prefill", prefill],
