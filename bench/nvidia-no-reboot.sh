@@ -16,9 +16,12 @@ set -euo pipefail
 DKMS=/usr/sbin/dkms
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKGS=(
-	"$HERE/.cache/nvidia-pkgs/hdr101.deb"
+	# Dependencies first, so nothing is left half-configured when dpkg moves on.
+	"$HERE/.cache/nvidia-pkgs/libdw1t64_0.192-4_amd64.deb"
+	"$HERE/.cache/nvidia-pkgs/pahole_1.30-1_amd64.deb"
 	"$HERE/.cache/nvidia-pkgs/linux-headers-6.12.101_deb13-common.deb"
 	"$HERE/.cache/nvidia-pkgs/kbuild-amd64.deb"
+	"$HERE/.cache/nvidia-pkgs/hdr101.deb"
 )
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -47,25 +50,15 @@ for p in "${PKGS[@]}"; do
 done
 
 echo "==> 2/5 install headers matching the RUNNING kernel (no upgrade)"
-# linux-kbuild depends on pahole (used for BTF). Without it dpkg leaves the
-# header packages unconfigured and the build silently has nothing to compile
-# against, so install it first.
-if ! command -v pahole >/dev/null 2>&1; then
-	apt-get install -y pahole || {
-		echo "could not install pahole (required by linux-kbuild)" >&2
-		exit 1
-	}
-fi
+# linux-kbuild depends on pahole, which depends on libdw1t64. `apt-get install`
+# deadlocks here: it refuses to install libdw1t64 while linux-kbuild is
+# unconfigured, and linux-kbuild cannot configure without pahole. Both packages
+# are staged as local .debs and installed with dpkg, which has no resolver.
 
-dpkg -i "${PKGS[@]}" || {
-	# A half-configured header package blocks the build, so fail loudly here
-	# rather than at the compile step.
-	echo "retrying dependency resolution" >&2
-	apt-get -f install -y || {
-		echo "dpkg failed; run 'sudo dpkg --configure -a' then retry" >&2
-		exit 1
-	}
-}
+dpkg -i "${PKGS[@]}" || true
+# Configure in a second pass: dpkg unpacks then configures, and a single pass can
+# leave a dependency unconfigured depending on argument order.
+dpkg --configure -a || true
 
 # If anything is still unconfigured the build tree is incomplete, which shows up
 # much later as a confusing compile error. Fail here instead.
