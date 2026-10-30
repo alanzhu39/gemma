@@ -38,7 +38,16 @@ function git(cmd) {
 if (record || recordMissing) {
 	// A reference recorded from a tree with model changes captures those changes
 	// as "correct", which defeats the entire gate.
-	const dirty = git(["status", "--porcelain", "--", "src/", "bench/check.ts"]);
+	const dirty = git([
+		"status",
+		"--porcelain",
+		"--",
+		"src/",
+		"bench/check.ts",
+		"bench/f32-model.ts",
+		"patches/",
+		"node_modules/@jax-js",
+	]);
 	if (dirty && !force) {
 		console.error("Refusing to record a golden: the model or check code has uncommitted changes.");
 		console.error(dirty);
@@ -165,7 +174,9 @@ try {
 			console.log(`[check] ${label} status:    ${result.status.toUpperCase()}`);
 			console.log(`[check] ${label} ${result.message}`);
 			if (result.status === "fail") exitCode = 1;
-			if (result.status === "no-golden" && exitCode === 0) exitCode = 2;
+			if ((result.status === "no-golden" || result.status === "stale-golden") && exitCode === 0) {
+				exitCode = 2;
+			}
 			if (result.status === "skipped") {
 				console.log(`[check] ${label} skipped (precision mismatch)`);
 			}

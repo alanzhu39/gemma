@@ -180,6 +180,22 @@ if (!args.json) {
 	console.log("");
 }
 
+// A result from a dirty tree cannot be reproduced from a commit, so it cannot
+// be verified by anyone else. Warn by default; block when gating.
+const dirtySides = [
+	["baseline", baseDoc],
+	["current", latestDoc],
+].filter(([, d]) => d.git?.dirty);
+if (dirtySides.length) {
+	const msg = `result measured from a dirty working tree: ${dirtySides.map(([n]) => n).join(", ")}`;
+	if (args.gate) {
+		console.error(`Cannot gate: ${msg}.`);
+		console.error("The change cannot be reproduced from a commit. Commit it and re-measure.");
+		process.exit(2);
+	}
+	console.warn(`warning: ${msg}`);
+}
+
 const problems = [];
 
 if (invalid.length) {

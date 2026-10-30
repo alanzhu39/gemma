@@ -15,6 +15,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -98,16 +99,37 @@ async function acquireInner({ wait = true, onWait } = {}) {
 	fs.mkdirSync(path.dirname(LOCK), { recursive: true });
 	let announced = false;
 
+	// A unique token proves *this* process owns the lock. Without it, a process
+	// whose lock was deleted and re-taken by someone else would delete the new
+	// holder's lock on exit, and two runs would overlap.
+	const token = crypto.randomUUID();
+
 	for (;;) {
 		try {
 			// 'wx' fails if the file exists, which is the atomicity we need.
 			const fd = fs.openSync(LOCK, "wx");
 			fs.writeSync(
 				fd,
-				JSON.stringify({ pid: process.pid, startedAt: Date.now(), argv: process.argv.slice(2) }),
+				JSON.stringify({
+					pid: process.pid,
+					token,
+					startedAt: Date.now(),
+					argv: process.argv.slice(2),
+				}),
 			);
 			fs.closeSync(fd);
 			return async () => {
+				// Only delete the lock if it is still ours. If it was removed and
+				// re-acquired while we ran, removing it now would hand the machine to
+				// a second concurrent run.
+				const current = readHolder();
+				if (!current || current.token !== token) {
+					console.warn(
+						"[bench] lock was taken over while this run was in progress; " +
+							"not releasing it. Overlapping results should be discarded.",
+					);
+					return;
+				}
 				try {
 					fs.unlinkSync(LOCK);
 				} catch {

@@ -50,7 +50,15 @@ export type DecodeGolden = {
 		position: number;
 		logits: number[];
 		argmax: number;
-	}[];
+		/**
+		 * Gap between the top two logits over the *whole* vocabulary.
+		 *
+		 * The sampled `logits` above are 64 arbitrary entries, so they cannot
+		 * tell a genuine argmax change from a coin-flip between two near-equal
+		 * tokens. This margin is what makes that distinction possible.
+		 */
+		margin: number;
+	};
 	indices: number[];
 };
 
@@ -67,12 +75,25 @@ function hasF16(adapter: GPUAdapter) {
 	return adapter.features.has("shader-f16" as GPUFeatureName);
 }
 
+let modelCache: { precision: "f16" | "f32"; model: Gemma3 } | null = null;
+
+/**
+ * Loads the model once and reuses it.
+ *
+ * The prefill and decode checks need the same weights. Loading twice doubles
+ * peak GPU memory for no reason, which matters as soon as this runs on a real
+ * device with a 6 GB card.
+ */
 async function loadModel(precision: "f16" | "f32"): Promise<Gemma3> {
+	if (modelCache?.precision === precision) return modelCache.model;
+	if (modelCache) throw new Error("cannot switch precision within one check run");
 	const res = await fetch("/weights/model.safetensors");
 	if (!res.ok) throw new Error(`failed to fetch weights: ${res.status}`);
 	const file = safetensors.parse(await res.arrayBuffer());
 	// The f16 loader lives in the model module; the f32 one is local to bench.
-	return precision === "f16" ? fromSafetensors(file) : loadModelF32(file);
+	const model = precision === "f16" ? fromSafetensors(file) : loadModelF32(file);
+	modelCache = { precision, model };
+	return model;
 }
 
 /** Run the fixed workload and return the sampled final-position logits. */
@@ -273,9 +294,22 @@ export async function computeDecodeLogits(
 		out.latent.dispose();
 
 		let argmax = 0;
-		for (let i = 1; i < all.length; i++) if (all[i] > all[argmax]) argmax = i;
+		let second = -Infinity;
+		for (let i = 0; i < all.length; i++) {
+			if (all[i] > all[argmax]) {
+				second = all[argmax];
+				argmax = i;
+			} else if (i !== argmax && all[i] > second) {
+				second = all[i];
+			}
+		}
 
-		steps.push({ position: state.position, logits: indices.map((i) => Number(all[i])), argmax });
+		steps.push({
+			position: state.position,
+			logits: indices.map((i) => Number(all[i])),
+			argmax,
+			margin: Number((all[argmax] - second).toFixed(4)),
+		});
 	}
 
 	state.kvCaches.forEach((c) => {
@@ -318,6 +352,18 @@ export async function runDecodeCheck(
 		};
 	}
 
+	// A golden recorded from a different workload would fail on logits and look
+	// like a numerical regression. Say what actually happened.
+	if (golden.contextLen !== actual.contextLen) {
+		return {
+			...base,
+			status: "stale-golden",
+			message:
+				`decode golden was recorded at ctx ${golden.contextLen} but the workload is now ` +
+				`ctx ${actual.contextLen}. Re-record with: npm run bench:golden-missing`,
+		};
+	}
+
 	const tolerance = opts.tolerance ?? 0.02;
 	let worstRel = 0;
 	let argmaxMismatch = -1;
@@ -328,12 +374,11 @@ export async function runDecodeCheck(
 		if (!g) continue;
 		worstRel = Math.max(worstRel, relativeError(a.logits, g.logits));
 		if (a.argmax !== g.argmax && argmaxMismatch < 0) {
-			// Only a *clear* argmax change is a failure. If the golden's top two
-			// logits were within noise of each other, a reordering is expected from
-			// any change in summation order and says nothing about correctness.
-			const sorted = [...g.logits].sort((x, y) => y - x);
-			const margin = Math.abs(sorted[0] - sorted[1]);
-			if (margin > 0.5) {
+			// Only a *clear* argmax change is a failure. When the golden's top two
+			// tokens were within noise of each other, a swap is expected from any
+			// change in summation order and says nothing about correctness. The
+			// margin comes from the full vocabulary, not the 64 sampled logits.
+			if ((g.margin ?? Infinity) > 0.5) {
 				argmaxMismatch = i;
 			} else {
 				nearTieSteps++;
