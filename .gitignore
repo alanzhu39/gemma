@@ -40,3 +40,4 @@ __pycache__/
 # Swarm secrets (local SwarmChat tokens)
 /swarm/.env.local
 /swarm/prompts
+/bench/.cache/bench.lock

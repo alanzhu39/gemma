@@ -17,6 +17,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
+import { acquireLock } from "./lock.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
@@ -24,7 +25,7 @@ const WEIGHTS = path.join(HERE, ".cache", "model.safetensors");
 const RESULTS_DIR = path.join(HERE, "results");
 
 function parseArgs(argv) {
-	const out = { repeats: 5, warmup: 2, only: [], label: null, json: false, software: false };
+	const out = { repeats: 5, warmup: 2, only: [], label: null, json: false, software: false, noWait: false };
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		if (a === "--repeats") out.repeats = Number(argv[++i]);
@@ -33,6 +34,7 @@ function parseArgs(argv) {
 		else if (a === "--label") out.label = argv[++i];
 		else if (a === "--json") out.json = true;
 		else if (a === "--software") out.software = true;
+		else if (a === "--no-wait") out.noWait = true;
 	}
 	return out;
 }
@@ -96,6 +98,18 @@ async function main() {
 		process.exit(1);
 	}
 
+	// Serialise runs: agents share this machine, and two concurrent benchmarks
+	// contend for the same CPU/GPU and invalidate both sets of numbers.
+	const release = acquireLock({
+		wait: !args.noWait,
+		onWait: (holder) =>
+			console.log(
+				`[bench] waiting for another run to finish (pid ${holder.pid}, started ${new Date(holder.startedAt).toISOString()})`,
+			),
+	});
+	// Release on every exit path, including Ctrl-C.
+	for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => (release(), process.exit(130)));
+
 	const { server, base } = await startVite();
 	const url = `${base}/bench/index.html`;
 
@@ -140,6 +154,7 @@ async function main() {
 
 	await browser.close();
 	await server.close();
+	release();
 
 	// Trust the browser's own renderer string over the adapter feature heuristics
 	// in the page: those cannot see through a masked adapter.

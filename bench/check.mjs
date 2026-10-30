@@ -14,6 +14,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
+import { acquireLock } from "./lock.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
@@ -38,6 +39,13 @@ if (!fs.existsSync(WEIGHTS)) {
 	console.error(`Missing weights. Run: npm run bench:fetch`);
 	process.exit(1);
 }
+
+// The correctness gate runs the model too; serialise it against benchmarks so
+// we are not measuring each other.
+const release = acquireLock({
+	onWait: (h) => console.log(`[check] waiting for pid ${h.pid} to finish`),
+});
+process.on("SIGINT", () => (release(), process.exit(130)));
 
 const server = await createServer({
 	root: ROOT,
@@ -116,6 +124,7 @@ try {
 } finally {
 	await browser.close();
 	await server.close();
+	release();
 }
 
 process.exit(exitCode);
