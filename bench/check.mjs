@@ -107,13 +107,32 @@ await page.goto(`${base}/bench/index.html`, { waitUntil: "load", timeout: 120_00
 
 await fsp.mkdir(GOLDEN_DIR, { recursive: true });
 
+// If the page navigates or reloads mid-run, page.evaluate rejects with a
+// destroyed-context error and the run is lost after minutes of work. Retry once
+// from a fresh page rather than failing on a transient.
+const evaluate = async (fn, arg) => {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await page.evaluate(fn, arg);
+		} catch (e) {
+			const msg = String(e?.message ?? e);
+			if (attempt < 2 && /context was destroyed|navigation/i.test(msg)) {
+				console.warn("[check] page navigated mid-run; reloading and retrying once");
+				await page.goto(`${base}/bench/index.html`, { waitUntil: "load", timeout: 120_000 });
+				continue;
+			}
+			throw e;
+		}
+	}
+};
+
 let exitCode = 0;
 try {
 	if (record) {
 		// Two references: a single prefill pass, and a decode trajectory long
 		// enough to wrap the sliding window and grow the global cache. The decode
 		// one covers the code paths the optimizations actually change.
-		const { prefill, decode } = await page.evaluate(async () => {
+		const { prefill, decode } = await evaluate(async () => {
 			const m = await import("/bench/check.ts");
 			const adapter = await navigator.gpu.requestAdapter();
 			const precision = adapter.features.has("shader-f16") ? "f16" : "f32";
@@ -145,7 +164,7 @@ try {
 		const df = path.join(GOLDEN_DIR, `${prefill.precision}-decode.json`);
 		await write(df, decode, `ctx=${decode.contextLen} argmax=${decode.steps.map((s) => s.argmax).join(",")}`);
 	} else {
-		const { prefill, decode } = await page.evaluate(
+		const { prefill, decode } = await evaluate(
 			async ({ tolerance }) => {
 				const m = await import("/bench/check.ts");
 				const adapter = await navigator.gpu.requestAdapter();

@@ -22,6 +22,13 @@ export default defineConfig({
 		port: 0,
 		strictPort: false,
 		fs: { strict: false, allow: [ROOT] },
+		// A long benchmark must never be interrupted by a reload. Vite's HMR
+		// client reloads the page when a source file changes, which destroys the
+		// page's execution context mid-run ("Execution context was destroyed") and
+		// silently invalidates the measurement. Agents share this tree, so file
+		// changes during a run are guaranteed.
+		hmr: false,
+		watch: { ignored: ["**/bench/results/**", "**/bench/.cache/**"] },
 	},
 	optimizeDeps: {
 		// Large, already-ESM dependencies: prebundling them just slows startup.
