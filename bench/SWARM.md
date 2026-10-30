@@ -228,6 +228,24 @@ fallback. Wall-clock on SwiftShader is not.
 Decode at ctx-1024: **723 dispatches**, 39 per layer (702 of them), plus 21
 step-level. Two orderings disagree, and the disagreement is the finding:
 
+Measured per-dispatch and per-byte cost by model region (decode, ctx 1024, a
+**quiet** run — `rank.mjs` reports `other-process utilisation 0.47`):
+
+| region | dispatches | share | MiB | note |
+| --- | --- | --- | --- | --- |
+| norm | 218 | 30.2% | 1.1 | pure launch overhead |
+| RoPE | 114 | 15.8% | 0.4 | pure launch overhead |
+| attention core | 110 | 15.2% | 23.4 | |
+| KV write | 72 | 10.0% | 87.3 | now row-write |
+| QKV proj | 54 | 7.5% | 67.7 | |
+| MLP | 54 | 7.5% | 270.7 | |
+| mask/slots | 40 | 5.5% | 0.2 | rebuilt per step |
+| embed | 2 | 0.3% | 640.0 | the accepted wall |
+
+The inversion is the point: **norm and RoPE are 46% of dispatches for 1.5 MiB of
+traffic**, while embed is 0.3% of dispatches for 640 MiB. Optimise those two
+regimes differently — launch count for the first, bytes for the second.
+
 | by wall-clock | | by dispatch count | |
 | --- | --- | --- | --- |
 | logits matvec | 22.2% | norm | 30.2% |
