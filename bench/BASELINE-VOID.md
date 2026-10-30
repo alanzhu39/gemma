@@ -60,3 +60,37 @@ and `shader-f16` (NVIDIA proprietary, modern AMD, Apple, or Intel). Then confirm
 `sysInfo.rendererString` names the real GPU and `sysInfo.precision` is `f16`,
 and sanity-check achieved GB/s against the card's nominal bandwidth before
 trusting any of it.
+
+## A better result: the production design is already right
+
+While invalidating the baseline, an audit of jax-js 0.1.11's dtype rules turned
+up something worth recording, because it means the fp16-storage / fp32-compute
+design **already does what it was intended to do**.
+
+`promoteTypes` (`backend-DZvR7mZV.js:375`) promotes `float16 < float32` to
+float32, and `dot` lowers to a multiply plus a reduce whose accumulator uses the
+*promoted* dtype (`index.js:2227`). But the promotion is emitted as an in-shader
+`AluOp.Cast` on the loaded value, not as a separate conversion pass:
+
+```wgsl
+var<storage, read> w : array<f16>;   // weight stays fp16 in memory
+... acc += f32(w[k]) * x[...];       // widened in register, f32 accumulate
+```
+
+There is even an explicit f16→f32 accumulator promotion for the pure-f16 case
+(`backend-DZvR7mZV.js:1373`), which is JAX's mixed-precision behaviour exactly.
+
+So on any adapter with `shader-f16`: weights are read as fp16 (half the bytes),
+widened in-register, and accumulated in fp32. No 320 MiB read plus 640 MiB write
+per projection — that scenario does not occur.
+
+Two consequences:
+
+1. **Memory traffic for weights is already halved** relative to an f32-store
+   design. Since batch-1 decode is bandwidth-bound, that is the single biggest
+   win available, and it is already in place.
+2. **`shader-f16` is mandatory, not optional.** Without it the shader *cannot*
+   declare `array<f16>`, so jax-js throws rather than falling back. Devices
+   without the feature (and this dev box, on NVK/Pascal) simply cannot run the
+   fp16 path. `bench/f32-model.ts` exists only to keep the harness usable there;
+   it is not representative of production.
