@@ -57,6 +57,22 @@ export const NUM_LAYERS = 18;
 export type Gemma3State = {
 	kvCaches: KVCache[];
 	position: number;
+	/**
+	 * The same value as `position`, as an int32 device scalar.
+	 *
+	 * `position` is a plain JS number, so handing it to a jitted function lifts
+	 * it to a constant and the constant is baked into the generated WGSL
+	 * (`result[gidx] = f32(129);`). Every new position therefore produces a new
+	 * shader, and a new shader means a new compute pipeline: the model was
+	 * compiling a pipeline on every decode step and paying an extra dispatch per
+	 * jit call site to materialise the literal.
+	 *
+	 * Carrying the value as a tensor keeps it a buffer read, so one shader serves
+	 * every position. It is advanced on-device rather than being rebuilt from a
+	 * JS number each step, which is what keeps it from being folded back into a
+	 * constant.
+	 */
+	positionTensor: np.Array;
 	collectWeights: boolean;
 	attentionWeights?: np.Array[];
 };
@@ -65,6 +81,7 @@ export function createGemma3State(model: Gemma3, collectWeights = false): Gemma3
 	return {
 		kvCaches: model.layers.map((_, i) => emptyKVCache(isSlidingAttention(i) ? 512 : 0, 256)),
 		position: 0,
+		positionTensor: np.array([0], { dtype: DType.Int32 }).reshape([]),
 		collectWeights,
 	};
 }
@@ -83,7 +100,7 @@ const CACHE_EXPANSION_SIZE = 128;
 
 export function runGemma3Step(
 	{ tokenEmbed, layers, norm }: Gemma3,
-	{ kvCaches, position, collectWeights }: Gemma3State,
+	{ kvCaches, position, positionTensor, collectWeights }: Gemma3State,
 	tokensAr: np.Array,
 ): { latent: np.Array; state: Gemma3State; attentionWeights?: np.Array[] } {
 	// Token embedding weights unused here
@@ -100,10 +117,10 @@ export function runGemma3Step(
 	const attentionWeights: np.Array[] = [];
 
 	const { slidingWindowSlots, slidingWindowMask, globalSlots, globalMask, sequencePositions } =
-		precomputeSlotsAndMasks(position, S, newCapacity, isPrefill);
+		precomputeSlotsAndMasks(positionTensor.ref, S, newCapacity, isPrefill);
 
-	const ropeSliding = precomputeRoPECache(position, S, HEAD_DIM, true);
-	const ropeGlobal = precomputeRoPECache(position, S, HEAD_DIM, false);
+	const ropeSliding = precomputeRoPECache(positionTensor.ref, S, HEAD_DIM, true);
+	const ropeGlobal = precomputeRoPECache(positionTensor.ref, S, HEAD_DIM, false);
 
 	for (let i = 0; i < layers.length; i++) {
 		// If kv cache is not large enough, expand it to next multiple of CACHE_EXPANSION_SIZE.
@@ -125,7 +142,7 @@ export function runGemma3Step(
 			kvCaches[i],
 			slotPositions.ref,
 			x,
-			position,
+			positionTensor.ref,
 			mask.ref,
 			cos.ref,
 			sin.ref,
@@ -139,7 +156,10 @@ export function runGemma3Step(
 		}
 	}
 
-	position = newContextLen;
+	const nextPosition = position + S;
+	// `add` takes ownership of its receiver, and every call above took a `.ref`
+	// of its own, so this consumes the tensor handed in and produces the next.
+	const nextPositionTensor = positionTensor.add(S);
 
 	slidingWindowSlots.dispose();
 	globalSlots.dispose();
@@ -150,7 +170,8 @@ export function runGemma3Step(
 	return {
 		latent: runRMSNorm(norm, x),
 		state: {
-			position,
+			position: nextPosition,
+			positionTensor: nextPositionTensor,
 			kvCaches,
 			collectWeights,
 		},
@@ -311,7 +332,17 @@ const precomputeRoPECache = jit(
 		angles = np.concatenate([angles.ref, angles], -1);
 
 		const cos = np.cos(angles.ref).astype(DType.Float32);
-		const sin = np.sin(angles).astype(DType.Float32);
+		// Pre-negated first half: [-sin_half, +sin_half]. Multiplying by ±1 is exact
+		// in IEEE 754 and folds into the sine kernel's epilogue, so this costs no
+		// extra dispatch. Paired with the flipped view in applyRoPE it replaces the
+		// rotate-half split/negate/concat with a stride view, folding RoPE into a
+		// single kernel.
+		const sign = np.where(
+			np.arange(headDim).less(headDim / 2),
+			np.array(-1, { dtype: DType.Float32 }),
+			np.array(1, { dtype: DType.Float32 }),
+		);
+		const sin = np.sin(angles).astype(DType.Float32).mul(sign);
 
 		return {
 			cos,
@@ -323,20 +354,19 @@ const precomputeRoPECache = jit(
 	},
 );
 
-function rotateHalf(x: np.Array) {
-	const half = x.shape.slice(-1)[0] / 2;
-	const [x1, x2] = np.split(x, [half], -1);
-	return np.concatenate([x2.neg(), x1], -1);
-}
-
-function applyRoPE(x: np.Array, cos: np.Array, sin: np.Array) {
-	// x: (S, H, D) or (S, D); cos/sin: (S, D)
-	// Broadcasting handles the head dim
-	if (x.ndim == 3) {
-		cos = np.expandDims(cos, 1); // (S, 1, D)
-		sin = np.expandDims(sin, 1);
-	}
-	return x.ref.mul(cos).add(rotateHalf(x).mul(sin));
+function applyRoPE(x: np.Array, cos: np.Array, sinSigned: np.Array) {
+	// x: (S, H, D) or (S, D); cos/sinSigned: (S, D)
+	// sinSigned is [-sin_half, +sin_half]. Viewing the last dim as (2, D/2) and
+	// flipping that pair axis gives [x2, x1] with the sign folded in, which is
+	// rotate_half(x) * sin. The flip is a stride view, so this is one fused
+	// kernel: mul + add + the rotate, with no split/negate/concat buffers.
+	const dim = x.shape[x.ndim - 1];
+	const half = dim / 2;
+	const lead = x.shape.slice(0, -1);
+	const broadcast = (t: np.Array) =>
+		x.ndim == 3 ? t.reshape([x.shape[0], 1, dim]) : t; // broadcast over heads
+	const rot = np.flip(x.ref.reshape([...lead, 2, half]), -2).reshape([...lead, dim]);
+	return x.mul(broadcast(cos)).add(rot.mul(broadcast(sinSigned)));
 }
 
 export function runAttention(
@@ -361,16 +391,29 @@ export function runAttention(
 	q = applyRoPE(q, cos.ref, sin.ref);
 	k = applyRoPE(k, cos, sin);
 
-	// Update KV cache
-	const writeIndexes = slotPositions.ref
-		.greaterEqual(position.ref)
-		.mul(slotPositions.ref.sub(position.ref));
-	const writeMask = slotPositions.ref
-		.greaterEqual(position.ref)
-		.mul(slotPositions.ref.less(position.ref.add(S)))
-		.reshape([-1, 1]);
-	kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
-	kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
+	// Update KV cache.
+	if (S === 1) {
+		// Decode writes exactly one row, and `slotPositions` is a permutation of
+		// the cache rows, so the row to write is the unique slot holding
+		// `position` (the old `>= position && < position + 1` mask, reduced).
+		// Broadcasting the [1, headDim] row also avoids the capacity-sized gather
+		// the general path needs: no [N, headDim] index vector, no [N, headDim]
+		// gather, and no full-capacity temporary per tensor.
+		const writeMask = slotPositions.ref.equal(position.ref).reshape([-1, 1]);
+		kvCache.k = np.where(writeMask.ref, k.ref, kvCache.k);
+		kvCache.v = np.where(writeMask, v.ref, kvCache.v);
+	} else {
+		// Prefill writes several rows, so build the gather index for them.
+		const writeIndexes = slotPositions.ref
+			.greaterEqual(position.ref)
+			.mul(slotPositions.ref.sub(position.ref));
+		const writeMask = slotPositions.ref
+			.greaterEqual(position.ref)
+			.mul(slotPositions.ref.less(position.ref.add(S)))
+			.reshape([-1, 1]);
+		kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
+		kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
+	}
 
 	if (!isPrefill) {
 		k.dispose();
@@ -380,28 +423,47 @@ export function runAttention(
 		v = kvCache.v.ref;
 	}
 
-	// [S, 4, 256] * [256, N] -> [4, S, N]
-	const weights = nn.softmax(
-		np.where(
-			mask,
-			np.einsum("SHD,ND->HSN", q, k).mul(1 / 16), // 1 / sqrt(headDim = 256)
-			-Infinity,
-		),
-	);
+	if (collectWeights) {
+		// [S, 4, 256] * [256, N] -> [4, S, N]
+		const weights = nn.softmax(
+			np.where(
+				mask,
+				np.einsum("SHD,ND->HSN", q, k).mul(1 / 16), // 1 / sqrt(headDim = 256)
+				-Infinity,
+			),
+		);
 
-	// [4, S, N] * [N, 256] -> [S, 4, 256]
-	const a = np.einsum("HSN,ND->SHD", weights.ref, v);
+		// [4, S, N] * [N, 256] -> [S, 4, 256]
+		const a = np.einsum("HSN,ND->SHD", weights.ref, v);
+
+		x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
+		position.dispose();
+		return [x, kvCache, weights.slice([], [], [0, S])];
+	}
+
+	// Written so jax-js fuses it into 4 kernels (QK^T, max, sum, PV), its floor of one
+	// reduction per kernel: no transposes, the mask is an additive bias so it fuses into
+	// the QK^T epilogue, exp(s - m) is recomputed by each consumer instead of
+	// materialised, and normalisation by 1/l happens in the PV epilogue.
+	// The clamps on m and l fuse into the reduction epilogues; they only matter for a fully
+	// masked row, which then yields 0 instead of NaN (-inf - -inf).
+	const N = k.shape[0];
+	const bias = np.where(mask.reshape([S, 1, N]), 0, -Infinity);
+	// [S, 4, 256] * [N, 256] -> [S, 4, N]
+	const scores = np.einsum("SHD,ND->SHN", q, k).mul(1 / 16).add(bias); // 1 / sqrt(headDim = 256)
+	// [S, 4]; reshaped per use, not keepdims, which would cost a copy kernel
+	const m = np.maximum(scores.ref.max(-1), -3e38);
+	const l = np.maximum(np.exp(scores.ref.sub(m.ref.reshape([S, NUM_HEADS, 1]))).sum(-1), 1e-30);
+	// [S, 4, N] * [N, 256] -> [S, 4, 256]
+	const a = np
+		.einsum("SHN,ND->SHD", np.exp(scores.sub(m.reshape([S, NUM_HEADS, 1]))), v)
+		.div(l.reshape([S, NUM_HEADS, 1]));
 
 	x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
 
 	position.dispose();
 
-	if (collectWeights) {
-		return [x, kvCache, weights.slice([], [], [0, S])];
-	} else {
-		weights.dispose();
-		return [x, kvCache];
-	}
+	return [x, kvCache];
 }
 
 export type Gemma3MLP = {

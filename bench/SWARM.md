@@ -269,11 +269,12 @@ Other measured facts worth not re-deriving:
   sampling serialised the pipeline was wrong.
 - Pad-on-growth is correctly confined to warmup.
 
-Prefill-1024: MLP 41.8%, attention 39.1%, QKV 10.3%. Attention binds 2666 MiB =
-48% of bytes. Decomposed, **QK is 2.00× PV at identical FLOPs**, purely from
-writing the score tensor. So restructuring helps PV, but QK's cost is only
-removable by a fused kernel — that is the argument for P5, measured rather than
-asserted.
+Prefill-1024: MLP 41.8%, attention 39.1%, QKV 10.3% (by kernel time). Attention
+binds 2666 MiB of 6433 MiB total bytes bound, i.e. **41.4%**, and it is the
+largest single region by traffic. Decomposed, **QK is 2.00× PV at identical
+FLOPs**, purely from writing the score tensor. So restructuring helps PV, but
+QK's cost is only removable by a fused kernel — that is the argument for P5,
+measured rather than asserted.
 
 **Caveat that must travel with these numbers:** the ms ordering above is CPU
 fallback and was contended. Only the dispatch and byte rankings are exact.

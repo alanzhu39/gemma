@@ -115,6 +115,10 @@ export async function computeLogits(precision: "f16" | "f32"): Promise<Golden> {
 	const input = np.array(TOKENS, { dtype: np.uint32 });
 	const out = runGemma3Step(tree.ref(model), state, input);
 	await blockUntilReady(out.latent);
+	// The step returns a new state: it consumed the position tensor it was given
+	// and produced the next one, so the incoming `state` is no longer the owner
+	// of anything.
+	state = out.state;
 	const latent = out.latent;
 	const latentShape = latent.shape.slice();
 
@@ -137,6 +141,7 @@ export async function computeLogits(precision: "f16" | "f32"): Promise<Golden> {
 		c.k.dispose();
 		c.v.dispose();
 	});
+	state.positionTensor.dispose();
 
 	return { precision, tokens: TOKENS, logits: vals, indices, argmax, latentShape };
 }
@@ -337,6 +342,7 @@ export async function computeDecodeLogits(
 		c.k.dispose();
 		c.v.dispose();
 	});
+	state.positionTensor.dispose();
 
 	return { precision, contextLen: DECODE_CONTEXT_LEN, tokens, steps, indices };
 }
