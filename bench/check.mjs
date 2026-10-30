@@ -23,6 +23,21 @@ const ROOT = path.resolve(HERE, "..");
 const WEIGHTS = path.join(HERE, ".cache", "model.safetensors");
 const GOLDEN_DIR = path.join(HERE, "goldens");
 
+/**
+ * Goldens are keyed by precision AND device class.
+ *
+ * Different GPUs round differently, and a CPU rasteriser differs from a GPU by
+ * far more than white noise: replaying a SwiftShader-recorded golden on the
+ * GTX 1060 produced 6.2e-4 of scale, which is 62% of the whole 1e-3 tolerance.
+ * Sharing one golden across devices would leave real regressions only 38% of the
+ * budget to show up in, and a slightly noisier device would fail on arithmetic
+ * it never changed.
+ */
+const deviceClass = (rendererString) =>
+	/swiftshader|llvmpipe|software/i.test(rendererString ?? "")
+		? "software"
+		: "hardware";
+
 const argv = process.argv.slice(2);
 const record = argv.includes("--record");
 // --record-missing only writes references that do not exist yet, so adding a new
@@ -181,19 +196,20 @@ try {
 			console.log(`recorded ${path.relative(process.cwd(), file)} (${label})`);
 		};
 
-		const file = path.join(GOLDEN_DIR, `${prefill.precision}.json`);
+		const cls = deviceClass(rendererString);
+		const file = path.join(GOLDEN_DIR, `${prefill.precision}-${cls}.json`);
 		await write(file, prefill, `argmax=${prefill.argmax}`);
-		const df = path.join(GOLDEN_DIR, `${prefill.precision}-decode.json`);
+		const df = path.join(GOLDEN_DIR, `${prefill.precision}-${cls}-decode.json`);
 		await write(df, decode, `ctx=${decode.contextLen} argmax=${decode.steps.map((s) => s.argmax).join(",")}`);
 	} else {
 		const { prefill, decode } = await evaluate(
-			async ({ tolerance, DEFAULTS }) => {
+			async ({ tolerance, DEFAULTS, cls }) => {
 				const m = await import("/bench/check.ts");
 				const adapter = await navigator.gpu.requestAdapter();
 				const precision = adapter.features.has("shader-f16") ? "f16" : "f32";
 				const load = async (name) => {
 					try {
-						const res = await fetch(`/bench/goldens/${precision}${name}.json`);
+						const res = await fetch(`/bench/goldens/${precision}-${cls}${name}.json`);
 						return res.ok ? await res.json() : null;
 					} catch {
 						return null;
@@ -208,7 +224,7 @@ try {
 					}),
 				};
 			},
-			{ tolerance, DEFAULTS: DEFAULT_TOLERANCE },
+			{ tolerance, DEFAULTS: DEFAULT_TOLERANCE, cls: deviceClass(rendererString) },
 		);
 
 		for (const [label, result] of [
