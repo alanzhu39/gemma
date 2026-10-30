@@ -1,0 +1,16 @@
+import { chromium } from 'playwright';
+import path from 'node:path';
+import { createServer } from 'vite';
+import { chromeArgs, chromeEnv } from '../chrome.mjs';
+const BENCH = path.dirname(new URL(import.meta.url).pathname);
+const ROOT = path.resolve(BENCH, '..', '..');
+const server=await createServer({root:ROOT,configFile:path.join(ROOT,'bench/vite.config.ts'),server:{port:0},logLevel:'error'});
+await server.listen();
+const base=server.resolvedUrls.local[0].replace(/\/$/,'');
+const b=await chromium.launch({headless:true,env:{...process.env,...chromeEnv()},args:chromeArgs()});
+const p=await b.newPage();
+p.on('pageerror',e=>console.log('[err]',e.message.slice(0,400)));
+await p.goto(base+'/bench/index.html',{waitUntil:'load'});
+const r=await p.evaluate(async()=>{ const m=await import('/bench/scripts/matvec-probe.ts'); return await m.probe2(); });
+console.log(JSON.stringify(r,null,1));
+await b.close(); await server.close();
