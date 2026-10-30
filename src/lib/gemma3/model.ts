@@ -361,16 +361,29 @@ export function runAttention(
 	q = applyRoPE(q, cos.ref, sin.ref);
 	k = applyRoPE(k, cos, sin);
 
-	// Update KV cache
-	const writeIndexes = slotPositions.ref
-		.greaterEqual(position.ref)
-		.mul(slotPositions.ref.sub(position.ref));
-	const writeMask = slotPositions.ref
-		.greaterEqual(position.ref)
-		.mul(slotPositions.ref.less(position.ref.add(S)))
-		.reshape([-1, 1]);
-	kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
-	kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
+	// Update KV cache.
+	if (S === 1) {
+		// Decode writes exactly one row, and `slotPositions` is a permutation of
+		// the cache rows, so the row to write is the unique slot holding
+		// `position` (the old `>= position && < position + 1` mask, reduced).
+		// Broadcasting the [1, headDim] row also avoids the capacity-sized gather
+		// the general path needs: no [N, headDim] index vector, no [N, headDim]
+		// gather, and no full-capacity temporary per tensor.
+		const writeMask = slotPositions.ref.equal(position.ref).reshape([-1, 1]);
+		kvCache.k = np.where(writeMask.ref, k.ref, kvCache.k);
+		kvCache.v = np.where(writeMask, v.ref, kvCache.v);
+	} else {
+		// Prefill writes several rows, so build the gather index for them.
+		const writeIndexes = slotPositions.ref
+			.greaterEqual(position.ref)
+			.mul(slotPositions.ref.sub(position.ref));
+		const writeMask = slotPositions.ref
+			.greaterEqual(position.ref)
+			.mul(slotPositions.ref.less(position.ref.add(S)))
+			.reshape([-1, 1]);
+		kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
+		kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
+	}
 
 	if (!isPrefill) {
 		k.dispose();
