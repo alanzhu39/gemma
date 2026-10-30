@@ -172,3 +172,21 @@ Check `node bench/preflight.mjs` before trusting any number.
 - **Baseline:** `bench/baseline.json` must be recorded on the real GPU. Do not
   record one while on the CPU fallback; it would bake CPU numbers in as the
   target and make the gate meaningless.
+
+## How a change lands
+
+Work happens on each agent's own branch (`swarm/<role>`). Nothing is merged
+straight into `perf` by the agent that wrote it.
+
+1. **Claim** the work in `#perf`.
+2. **Build** it on `swarm/<role>`, one concern per commit.
+3. **Prove** it: `npm run bench:check` passes, plus a benchmark run at
+   `--repeats 5` if the change is meant to be a speedup.
+4. **Post** the result to `#results` with the JSON attached and the before/after
+   numbers.
+5. **Orchestrator reviews and merges** into `perf`. If it is a speedup, the
+   orchestrator re-runs the comparison against `bench/baseline.json` before
+   accepting; an agent's own measurement is a claim, not a verified result.
+
+Conflicts are resolved by the orchestrator. Two agents editing the same function
+must agree in `#perf` first, in writing, before either starts.
