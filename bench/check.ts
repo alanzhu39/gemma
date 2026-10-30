@@ -58,6 +58,14 @@ export type DecodeGolden = {
 		 * tokens. This margin is what makes that distinction possible.
 		 */
 		margin: number;
+		/**
+		 * The winning logit itself.
+		 *
+		 * The tolerance is relative, so the absolute error we permit scales with
+		 * the magnitude of the values. To decide whether an argmax change is real
+		 * we need that same scale, which is what this provides.
+		 */
+		top1: number;
 	};
 	indices: number[];
 };
@@ -309,6 +317,7 @@ export async function computeDecodeLogits(
 			logits: indices.map((i) => Number(all[i])),
 			argmax,
 			margin: Number((all[argmax] - second).toFixed(4)),
+			top1: Number(Number(all[argmax]).toFixed(4)),
 		});
 	}
 
@@ -374,11 +383,20 @@ export async function runDecodeCheck(
 		if (!g) continue;
 		worstRel = Math.max(worstRel, relativeError(a.logits, g.logits));
 		if (a.argmax !== g.argmax && argmaxMismatch < 0) {
-			// Only a *clear* argmax change is a failure. When the golden's top two
-			// tokens were within noise of each other, a swap is expected from any
-			// change in summation order and says nothing about correctness. The
-			// margin comes from the full vocabulary, not the 64 sampled logits.
-			if ((g.margin ?? Infinity) > 0.5) {
+			// Is this flip distinguishable from numerical noise?
+			//
+			// The tolerance is relative, so the absolute error permitted on a logit
+			// of magnitude |top1| is roughly tolerance * |top1|. If the gap between
+			// the golden's top two tokens is smaller than that, the two tokens are
+			// within the noise we already accept, and a swap is expected from any
+			// change in summation order. If it is larger, the model genuinely
+			// changed its mind and that is a failure.
+			//
+			// A fixed threshold cannot work here: real top-2 gaps in this model are
+			// 0.1-0.7, well inside the error a 2% tolerance already allows, so a
+			// hardcoded margin would either mask real breakage or fail constantly.
+			const allowance = tolerance * Math.max(1, Math.abs(g.top1 ?? 0));
+			if ((g.margin ?? Infinity) > allowance) {
 				argmaxMismatch = i;
 			} else {
 				nearTieSteps++;

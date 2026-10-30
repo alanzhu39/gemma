@@ -149,5 +149,17 @@
   "latentShape": [
     11,
     640
-  ]
+  ],
+  "provenance": {
+    "gitRev": "3525dcaed0ff16da3e5796d2de5bde4dac77c659",
+    "branch": "perf",
+    "recordedAt": "2026-10-30T03:31:05.373Z",
+    "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver-5.0.0)",
+    "flags": [
+      "--no-sandbox",
+      "--enable-unsafe-webgpu",
+      "--ignore-gpu-blocklist",
+      "--disable-dev-shm-usage"
+    ]
+  }
 }
