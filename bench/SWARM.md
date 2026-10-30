@@ -140,6 +140,20 @@ A change is done when all of these are true:
       number was before and after.
 - [ ] Any library patch is reproducible from a clean `npm install`.
 
+## Worktree setup (read this first)
+
+Each agent has a git worktree under `/tmp/gemma-swarm/<role>` on branch
+`swarm/<role>`. The worktree shares the main checkout's `node_modules`,
+`.svelte-kit`, and `bench/.cache` through symlinks.
+
+**Do not run `npm install` or `npm ci`.** It replaces the symlink with a real
+1 GB tree, wastes time and disk, and can pick up dependency versions the rest of
+the team is not running. If something genuinely needs installing, say so in
+`#perf` first and let the orchestrator decide.
+
+If `node bench/preflight.mjs` fails with a missing module, the symlink is
+broken — tell the orchestrator rather than reinstalling.
+
 ## Current environment status
 
 Check `node bench/preflight.mjs` before trusting any number.
