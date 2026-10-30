@@ -190,3 +190,32 @@ straight into `perf` by the agent that wrote it.
 
 Conflicts are resolved by the orchestrator. Two agents editing the same function
 must agree in `#perf` first, in writing, before either starts.
+
+## How to report a measurement
+
+Learned the hard way: an early claim from this swarm was directionally right and
+factually wrong in its headline number, and another was right in symptom but
+wrong in cause. Both cost the team more than saying less would have.
+
+Every reported number should make these distinctions explicit:
+
+1. **Measured vs inferred.** Say which. "1 compile per step, measured from the
+   profiler artifact" is different from "21 compiles, inferred from 21
+   dispatches carrying that shader". The second was wrong; the first was right.
+2. **Mechanism vs magnitude.** "Passing `position` as a device scalar removes the
+   per-step recompile" (mechanism, provable with a small probe) is a different
+   claim from "this saves X ms/token" (magnitude, needs a real run). Publish the
+   mechanism when you have it; do not let it imply the magnitude.
+3. **Run the control before publishing a strong claim.** If you think N distinct
+   inputs cause growth, also run N identical inputs. The first version of the
+   "unbounded cache" claim survived exactly until the control was run, which
+   showed memory did not scale with distinct positions at all.
+4. **Retract explicitly.** If a claim turns out wrong, say so in the same channel
+   with the corrected version. A quietly abandoned claim is worse than a public
+   retraction, because teammates are still building on it.
+5. **Name what the measurement cannot see.** A counter that is invisible on the
+   CPU fallback (e.g. the WebGPU shader pipeline cache) must be labelled
+   "source inspection, unmeasured" rather than folded into a measured result.
+6. **Never reason about an aborted run.** If a run crashed, timed out, or was
+   killed, it produced no result. Re-run it. Do not infer what it "would have"
+   shown.
