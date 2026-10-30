@@ -325,3 +325,59 @@ vocabulary table. That has consequences:
 Implication for the swarm: do not spend kernel cycles on the logits matvec. It is
 an accepted wall unless someone takes on embedding quantisation with a gate
 measurement.
+
+## Measured hardware facts (GTX 1060, NVIDIA 550.163.01, f32)
+
+Only figures that survived a control. Anything not listed here should be
+re-measured rather than remembered.
+
+| fact | value | how it was established |
+| --- | --- | --- |
+| Read bandwidth | **~101–128 GB/s** | read-only kernel, output summed and checked against CPU |
+| Copy bandwidth (vec4) | **~139 GB/s** | vec4 shader copy, verified |
+| `copyBufferToBuffer` | **~145 GB/s** | driver DMA path |
+| **Scalar copy** | **~12.5 GB/s** | same bytes as the vec4 case |
+| `maxComputeWorkgroupsPerDimension` | **65535** | exceeding it silently no-ops |
+| Workgroup count vs throughput | **flat** 256–32768 | same kernel, verified, 113–140 GB/s throughout |
+
+### Vectorise your loads
+
+The single largest measured gap: a **vec4** copy kernel reaches 139 GB/s while a
+**scalar** copy of the same bytes reaches 12.5 GB/s. That is an ~11x difference on
+the operation these kernels do most, and it is codegen, not hardware. jax-js's
+logits kernel reads scalar f32 with one accumulator per thread, which is likely
+most of the gap between its 26.6 ms and the ~6.6 ms floor.
+
+### Workgroup count is NOT a constraint (refuted)
+
+An earlier note here claimed ~71 us of cost per workgroup, based on a measurement
+showing 256 workgroups at 126 GB/s and 32768 at 0.6 GB/s. **That was a bug in the
+probe, not the hardware.** The kernel used `index = workgroup*PER + lane` with a
+workgroup size of 256, so any `PER < 256` made workgroups overlap and redo the
+same elements up to 64x.
+
+Re-measured with correct grid-stride indexing (`index = workgroup*256 + lane`,
+`stride = WG*256`), throughput is flat: 124/140/131/140 GB/s for copy and
+114/120/114/128 GB/s for read at 256/1024/4096/32768 workgroups. **One workgroup
+per row is fine for bandwidth; it is not a throughput cliff.**
+
+The 65535 limit is still real and must be respected — exceeding it silently
+produces nothing — but it is a correctness hazard, not a performance one.
+
+### Instruments that lie
+
+Two cases where a tool told the truth and we misread it:
+
+- `nvidia-smi` reporting `utilisation.gpu 0%` and `P8 139 MHz` during a profile
+  does **not** mean the GPU is idle. The step is hundreds of tiny dispatches with
+  gaps; the card downclocks between kernels and sustains ~1650 MHz during them.
+- The ANGLE renderer string naming a GPU does **not** mean WebGPU is using it.
+  ANGLE (OpenGL) and Dawn (WebGPU) choose backends independently; read
+  `maxComputeWorkgroupStorageSize` instead (32768 = SwiftShader, higher = real).
+
+### Device limits are not adapter limits
+
+A bare `requestDevice()` on this card yields **256 MB** and **16 KiB** workgroup
+storage against an adapter advertising **4.29 GB** and **48 KiB**. Any working set
+above 256 MB then silently does nothing. Kernels must pass raised
+`requiredLimits`. This generated thousands-of-GB/s nonsense for a day.
