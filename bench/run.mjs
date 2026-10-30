@@ -47,7 +47,7 @@ const WEIGHTS = path.join(HERE, ".cache", "model.safetensors");
 const RESULTS_DIR = path.join(HERE, "results");
 
 function parseArgs(argv) {
-	const out = { repeats: 5, warmup: 2, only: [], label: null, json: false, software: false, noWait: false };
+	const out = { repeats: 5, warmup: 2, only: [], label: null, json: false, software: false, noWait: false, allowDirty: false };
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		if (a === "--repeats") out.repeats = Number(argv[++i]);
@@ -57,6 +57,7 @@ function parseArgs(argv) {
 		else if (a === "--json") out.json = true;
 		else if (a === "--software") out.software = true;
 		else if (a === "--no-wait") out.noWait = true;
+		else if (a === "--allow-dirty") out.allowDirty = true;
 	}
 	return out;
 }
@@ -102,6 +103,15 @@ async function main() {
 			void release();
 			process.exit(130);
 		});
+	}
+
+	// Capture provenance BEFORE measuring, not after. A full suite on a software
+	// renderer takes hours, and sampling at the end would attribute the result to
+	// whatever the tree looked like when it finished rather than when it ran.
+	const gitStart = gitProvenance();
+	if (gitStart?.dirty && !args.allowDirty) {
+		console.warn("[bench] WARNING: working tree is dirty; this result cannot be reproduced from a commit.");
+		console.warn("[bench] Pass --allow-dirty for exploratory runs; it is not a valid baseline.");
 	}
 
 	// Measure how much CPU *other* processes used while we ran. Load average is
@@ -161,7 +171,7 @@ async function main() {
 		isSoftwareRenderer: sw,
 		contention,
 	};
-	result.git = gitProvenance();
+	result.git = gitStart;
 
 	await fsp.mkdir(RESULTS_DIR, { recursive: true });
 	const stamp = new Date().toISOString().replace(/[:.]/g, "-");

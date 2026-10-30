@@ -128,11 +128,22 @@ const latest = byName(latestDoc);
 
 const rows = [];
 const missing = [];
+const invalid = [];
 for (const [name, before] of base) {
 	const now = latest.get(name);
 	if (!now) {
 		// A workload in the baseline that the current run skipped.
 		missing.push(name);
+		continue;
+	}
+	// A zero/NaN/infinite throughput produces an infinite or meaningless ratio,
+	// which would silently satisfy the gate (`Infinity >= 2` is true).
+	if (!Number.isFinite(before.tps) || before.tps <= 0) {
+		invalid.push(`baseline ${name} has unusable tps (${before.tps})`);
+		continue;
+	}
+	if (!Number.isFinite(now.tps) || now.tps <= 0) {
+		invalid.push(`current ${name} has unusable tps (${now.tps})`);
 		continue;
 	}
 	rows.push({
@@ -170,6 +181,10 @@ if (!args.json) {
 }
 
 const problems = [];
+
+if (invalid.length) {
+	for (const m of invalid) problems.push(m);
+}
 
 // A partial run cannot demonstrate anything: `--only prefill-128` would leave
 // the target workloads unmeasured and silently "pass".
