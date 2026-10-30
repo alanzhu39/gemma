@@ -259,3 +259,40 @@ asserted.
 
 **Caveat that must travel with these numbers:** the ms ordering above is CPU
 fallback and was contended. Only the dispatch and byte rankings are exact.
+
+## The memory-bandwidth floor (read this before setting expectations)
+
+Decode at batch 1 is a streaming problem: every token must read the weights.
+From the actual safetensors shapes, at f16, with ctx 1024:
+
+| traffic per token | MiB | share |
+| --- | --- | --- |
+| **logits matvec (tied embedding, 262144x640)** | **320.0** | **61%** |
+| 18 decoder layers of weights | 191.4 | 37% |
+| KV cache reads (15 sliding @512, 3 global @1024) | 10.5 | 2% |
+| **total** | **521.9** | |
+
+So two thirds of every decode step is one matrix-vector product against the
+vocabulary table. That has consequences:
+
+- **A bandwidth floor exists and is not negotiable by kernel work.** On a
+  GTX 1060 (~192 GB/s) the floor is ~2.65 ms/token ≈ **377 tok/s**. At 1 TB/s it
+  is ~1962 tok/s. No amount of fusion, dispatch batching or tiling beats it; the
+  kernel already reads its own weights exactly once in one dispatch.
+- **Check the target against the floor before chasing it.** A 2x decode target is
+  reachable only if the measured baseline sits meaningfully below the floor for
+  that GPU. If the baseline is already close, 2x is arithmetically impossible
+  without reducing bytes moved.
+- **The one real lever is quantisation of the tied embedding.** int8 halves the
+  table to 160 MiB, int4 to 80 MiB. Because the embedding is tied, quantising the
+  output head also quantises the input gather, which reads a single row and does
+  not care how wide the table is — nearly all the saving lands on the matvec.
+  This is a correctness/golden task before it is a performance task: it changes
+  logits, and the gate requires a stable argmax.
+- **There is no safe shortcut on the vocabulary.** Exact argmax needs all 262144
+  dot products; a decaying-vocabulary or approximate search changes the tail
+  winner and would silently degrade output.
+
+Implication for the swarm: do not spend kernel cycles on the logits matvec. It is
+an accepted wall unless someone takes on embedding quantisation with a gate
+measurement.
