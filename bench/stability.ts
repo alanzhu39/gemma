@@ -29,6 +29,8 @@ export type StepRecord = {
 	norm: number;
 	/** Global KV capacity in rows during this step, to identify repad steps. */
 	globalCapacity: number;
+	/** The token id fed to this step. */
+	token: number;
 };
 
 function counts(): Counts {
@@ -97,6 +99,7 @@ export async function runStability(context: number[], decode: number[]) {
 		out.latent.dispose();
 		steps.push({
 			globalCapacity: state.kvCaches[5].k.shape[0],
+			token: tok,
 			dispatch: d.dispatch,
 			submit: d.submit,
 			createBuffer: d.createBuffer,

@@ -205,18 +205,20 @@ try {
 		);
 	}
 
-	// The bound that matters for a literal: one compile per distinct folded
-	// value. Every step having a *distinct* token id would compile every step; a
-	// repeated token reuses its shader. So compare the total against the number
-	// of distinct tokens the run could possibly have seen, and separately check
-	// the trend.
-	const distinctTokens = new Set(decode).size;
+	// The bound that matters for a folded literal: a shader is keyed on the whole
+	// graph, so each distinct (folded value, cache capacity) pair compiles once
+	// and is then reused. A token id that repeats reuses its shader; the same
+	// token after the cache grows to a new capacity does not, because the cache
+	// shape is baked into the kernels that attend over it.
+	const distinctKeys = new Set(steady.map((s) => `${s.token}@${s.globalCapacity}`)).size;
+	const distinctTokens = new Set(steady.map((s) => s.token)).size;
 	const asyncTotal = series("pipeAsync").reduce((a, b) => a + b, 0);
-	if (asyncTotal > distinctTokens) {
+	if (asyncTotal > distinctKeys) {
 		problems.push(
-			`${asyncTotal} pipelines compiled for ${distinctTokens} distinct token values: more than ` +
-				`one per distinct folded value, so something other than the token is also being ` +
-				`specialised per step`,
+			`${asyncTotal} pipelines compiled for ${distinctKeys} distinct (token, capacity) pairs ` +
+				`(${distinctTokens} distinct tokens over ${new Set(steady.map((s) => s.globalCapacity)).size} ` +
+				`cache capacities): more than one per distinct specialised value, so something beyond ` +
+				`the token literal is also being specialised per step`,
 		);
 	}
 	const pipeSlope = slope(pipes);
@@ -302,7 +304,7 @@ try {
 		console.log("");
 		console.log(
 			`PASS flat over ${steady.length} steps: 0 sync pipelines, ${asyncTotal} async over ` +
-				`${distinctTokens} distinct tokens (slope ${pipeSlope.toExponential(2)}/step), ` +
+				`${distinctKeys} distinct (token, capacity) pairs (slope ${pipeSlope.toExponential(2)}/step), ` +
 				`dispatches ${dLo}-${dHi}/step, allocation flat within ${(tailSpread / 1024).toFixed(1)} KiB ` +
 				`over the last ${tail.length} steps, argmax stable, decode vs prefill rel err ` +
 				`${r.selfErr.toExponential(2)}`,
