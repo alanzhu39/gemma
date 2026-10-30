@@ -711,7 +711,8 @@
         -14.478253364562988
       ],
       "argmax": 8146,
-      "margin": 0.4458
+      "margin": 0.4458,
+      "top1": 1.0009
     },
     {
       "position": 640,
@@ -782,7 +783,8 @@
         -42.1041374206543
       ],
       "argmax": 8612,
-      "margin": 0.2668
+      "margin": 0.2668,
+      "top1": -25.968
     },
     {
       "position": 641,
@@ -853,7 +855,8 @@
         -23.0228214263916
       ],
       "argmax": 8612,
-      "margin": 0.6881
+      "margin": 0.6881,
+      "top1": -8.5488
     },
     {
       "position": 642,
@@ -924,7 +927,8 @@
         -5.824146747589111
       ],
       "argmax": 236775,
-      "margin": 0.1024
+      "margin": 0.1024,
+      "top1": 11.3788
     }
   ],
   "indices": [
@@ -994,9 +998,9 @@
     262143
   ],
   "provenance": {
-    "gitRev": "3525dcaed0ff16da3e5796d2de5bde4dac77c659",
+    "gitRev": "3b751cf8de22e09ddf5aab767ce50fecc968653f",
     "branch": "perf",
-    "recordedAt": "2026-10-30T03:31:05.373Z",
+    "recordedAt": "2026-10-30T03:41:30.028Z",
     "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver-5.0.0)",
     "flags": [
       "--no-sandbox",
