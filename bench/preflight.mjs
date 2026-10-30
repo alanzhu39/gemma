@@ -94,6 +94,21 @@ if (gpu.available) {
 		console.log(`vendor:             ${gpu.info?.vendor || "(not exposed)"}`);
 		console.log(`software renderer:  ${software ? "YES" : "no"}`);
 		console.log(`shader-f16:         ${gpu.f16 ? "yes" : "NO"}`);
+		// WebGPU runs through Dawn, whose backend is chosen separately from
+		// ANGLE's. A machine can report the NVIDIA adapter via ANGLE (OpenGL)
+		// while Dawn quietly uses SwiftShader, which is exactly what happened
+		// here after the proprietary driver install. These limits identify the
+		// backend: 32 KiB workgroup storage and a 1 GiB buffer cap are
+		// SwiftShader defaults; real hardware reports more.
+		const swLimits = gpu.limits.maxComputeWorkgroupStorageSize <= 32768 && gpu.limits.maxBufferSize <= 1073741824;
+		console.log(`WG storage:         ${gpu.limits.maxComputeWorkgroupStorageSize} bytes`);
+		console.log(`maxBufferSize:      ${(gpu.limits.maxBufferSize / 1e9).toFixed(2)} GB`);
+		if (swLimits) {
+			console.log("");
+			console.log("!! These limits match Dawn's SwiftShader defaults, which means");
+			console.log("!! WebGPU is NOT on the GPU even if ANGLE below reports one.");
+			console.log("!! ANGLE (OpenGL) and Dawn (WebGPU) pick backends independently.");
+		}
 		console.log(`maxBufferSize:      ${(gpu.limits.maxBufferSize / 1e9).toFixed(2)} GB`);
 		console.log(`maxStorageBinding:  ${(gpu.limits.maxStorageBufferBindingSize / 1e9).toFixed(2)} GB`);
 		console.log(`workgroup storage:  ${gpu.limits.maxComputeWorkgroupStorageSize} bytes`);

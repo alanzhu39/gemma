@@ -30,14 +30,19 @@ export function chromeArgs({ software = false } = {}) {
 	if (software) {
 		return [...base, "--use-angle=swiftshader", "--enable-unsafe-swiftshader"];
 	}
-	// Without these, headless Chromium selects ANGLE's SwiftShader (CPU) backend
-	// even when a driver is installed and the device node is accessible. Measured
-	// on this machine: default -> SwiftShader, with these flags -> NVK on the
-	// GTX 1060. They are harmless on a machine with no Vulkan driver: Chromium
-	// falls back on its own.
+	// Chromium picks two graphics backends independently: ANGLE for OpenGL and
+	// Dawn for WebGPU. Pointing only ANGLE at Vulkan leaves WebGPU on SwiftShader
+	// while the renderer string happily reports the GPU - which is exactly how a
+	// full day was lost here.
+	//
+	// `VulkanFromANGLE` is the flag that actually moves Dawn; without it
+	// `maxComputeWorkgroupStorageSize` stays at SwiftShader's 32768 and every
+	// kernel runs on the CPU. With it, this machine reports 49152 and a 4.29 GB
+	// buffer cap. Verified by sweeping ten flag combinations and reading those
+	// limits, which are a far more reliable signal than the renderer string.
 	return [
 		...base,
-		"--enable-features=Vulkan",
+		"--enable-features=Vulkan,VulkanFromANGLE",
 		"--use-angle=vulkan",
 		"--use-vulkan=native",
 	];
