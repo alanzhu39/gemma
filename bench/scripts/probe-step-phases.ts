@@ -45,6 +45,11 @@ export async function probe() {
 		await blockUntilReady(out.latent);
 		const tC = performance.now(); // GPU finished the model
 
+		// This second sync is required, not optional: the projection reads the
+		// latent, so it cannot start until the model finishes. That means the
+		// time below includes draining anything still queued, and is an upper
+		// bound on the projection rather than its own cost. Isolate it by timing
+		// the same projection twice in a row on already-resident data.
 		const logits = runLinear(
 			{ weight: tree.ref(model).tokenEmbed },
 			out.latent.ref.slice([-1]).flatten(),
@@ -54,6 +59,15 @@ export async function probe() {
 		const tE = performance.now(); // GPU finished projection
 		await logits.data();
 		const tF = performance.now(); // readback done
+
+		// Isolated projection: same matvec, second time, nothing queued ahead.
+		const lat2 = out.latent.ref.slice([-1]).flatten();
+		const iso0 = performance.now();
+		const isoLogits = runLinear({ weight: tree.ref(model).tokenEmbed }, lat2);
+		const iso1 = performance.now();
+		await blockUntilReady(isoLogits);
+		const iso2 = performance.now();
+		isoLogits.dispose();
 
 		st = out.state;
 		out.latent.dispose();
@@ -65,6 +79,9 @@ export async function probe() {
 			hostIssueLogits: +(tD - tC).toFixed(1),
 			gpuWaitLogits: +(tE - tD).toFixed(1),
 			readback: +(tF - tE).toFixed(1),
+			// Isolated projection: nothing queued ahead of it.
+			isolatedLogitsIssue: +(iso1 - iso0).toFixed(1),
+			isolatedLogitsWait: +(iso2 - iso1).toFixed(1),
 			total: +(tF - tA).toFixed(1),
 		});
 	}
