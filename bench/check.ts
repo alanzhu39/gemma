@@ -387,6 +387,12 @@ export async function runDecodeCheck(
 
 	const tolerance = opts.tolerance ?? 0.02;
 	let worstRel = 0;
+	// Absolute drift, tracked separately. The normalised metric deliberately
+	// trades away sensitivity to small absolute movement on high-magnitude steps,
+	// so a PASS means "did not move by more than the tolerance of scale", not
+	// "nothing moved". Reporting the absolute figure alongside keeps that visible
+	// instead of letting a green check imply more than it proves.
+	let worstAbsDiff = 0;
 	let argmaxMismatch = -1;
 	let nearTieSteps = 0;
 	for (let i = 0; i < actual.steps.length; i++) {
@@ -394,6 +400,7 @@ export async function runDecodeCheck(
 		const g = golden.steps[i];
 		if (!g) continue;
 		worstRel = Math.max(worstRel, relativeError(a.logits, g.logits));
+		worstAbsDiff = Math.max(worstAbsDiff, maxAbsDiff(a.logits, g.logits));
 		if (a.argmax !== g.argmax && argmaxMismatch < 0) {
 			// Is this flip distinguishable from numerical noise?
 			//
@@ -422,11 +429,14 @@ export async function runDecodeCheck(
 		status: ok ? "pass" : "fail",
 		golden,
 		worstRel,
+		worstAbsDiff,
 		argmaxMismatch,
 		nearTieSteps,
 		tolerance,
 		message: ok
-			? `decode logits match golden across ${actual.steps.length} steps (max rel err ${worstRel.toExponential(2)}${nearTieSteps ? `, ${nearTieSteps} near-tie argmax flip(s) tolerated` : ""})`
+			? `decode logits match golden across ${actual.steps.length} steps` +
+				` (norm err ${worstRel.toExponential(2)} of scale, abs ${worstAbsDiff.toExponential(2)}, argmax ${actual.steps.length - nearTieSteps}/${actual.steps.length} enforced` +
+				`${nearTieSteps ? `, ${nearTieSteps} near-tie tolerated` : ""})`
 			: [
 					!finite && "non-finite decode logits",
 					!spread && "decode logits collapsed",
