@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Builds and loads the NVIDIA kernel module WITHOUT rebooting.
+#
+# The blocker was not the driver: it was that Debian trixie ships headers only
+# for 6.12.107+, while this machine runs 6.12.101. DKMS therefore had nothing to
+# build against and silently produced no module. Upgrading the kernel would fix
+# it but needs a reboot.
+#
+# The headers for the running kernel still exist in Debian's snapshot archive.
+# This script installs those exact versions, builds the module for the kernel we
+# are already running, and loads it in place. No reboot, no kernel change.
+#
+# Run as root:  sudo ./bench/nvidia-no-reboot.sh
+set -euo pipefail
+
+DKMS=/usr/sbin/dkms
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKGS=(
+	"$HERE/.cache/nvidia-pkgs/hdr101.deb"
+	"$HERE/.cache/nvidia-pkgs/linux-headers-6.12.101_deb13-common.deb"
+	"$HERE/.cache/nvidia-pkgs/linux-kbuild-6.12.101_deb13.deb"
+)
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "must run as root: sudo $0" >&2
+	exit 1
+fi
+
+KREL="$(uname -r)"
+echo "running kernel: $KREL"
+
+echo "==> 1/5 check the header packages are present"
+for p in "${PKGS[@]}"; do
+	if [ ! -f "$p" ]; then
+		echo "missing $p" >&2
+		echo "re-run the download step documented in bench/NVIDIA-DRIVER-SWAP.md" >&2
+		exit 1
+	fi
+done
+
+echo "==> 2/5 install headers matching the RUNNING kernel (no upgrade)"
+dpkg -i "${PKGS[@]}" || {
+	echo "dpkg failed; the packages may require an exact image/version match" >&2
+	exit 1
+}
+
+if [ ! -d "/lib/modules/$KREL/build" ]; then
+	echo "/lib/modules/$KREL/build still missing - aborting before touching the module" >&2
+	exit 1
+fi
+echo "    headers in place for $KREL"
+
+echo "==> 3/5 build the NVIDIA module for $KREL"
+"$DKMS" install nvidia/550.163.01 -k "$KREL" || {
+	echo "--- build failed; log follows ---" >&2
+	tail -40 "/var/lib/dkms/nvidia/550.163.01/build/make.log" >&2 || true
+	exit 1
+}
+"$DKMS" status || true
+
+KO=$(ls "/lib/modules/$KREL/updates/dkms/"nvidia*.ko* 2>/dev/null | head -1 || true)
+if [ -z "$KO" ]; then
+	echo "module not produced - not loading anything" >&2
+	exit 1
+fi
+echo "    built $KO"
+
+echo "==> 4/5 load it"
+modprobe nvidia
+sleep 1
+
+echo "==> 5/5 verify"
+if nvidia-smi --query-gpu=name,clocks.sm,clocks.max.sm --format=csv 2>/dev/null; then
+	echo
+	echo "GPU is up. Next:"
+	echo "  node bench/preflight.mjs      # expect shader-f16: yes"
+	echo "  npm run bench:golden          # f16 hardware goldens"
+else
+	echo "module loaded but nvidia-smi still failing" >&2
+	dmesg | tail -20 >&2 || true
+	exit 1
+fi

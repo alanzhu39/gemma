@@ -41,3 +41,4 @@ __pycache__/
 /swarm/.env.local
 /swarm/prompts
 /bench/.cache/bench.lock
+/bench/.cache/nvidia-pkgs
