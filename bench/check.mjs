@@ -59,6 +59,21 @@ if (record || recordMissing) {
 const tolIdx = argv.indexOf("--tolerance");
 const tolerance = tolIdx >= 0 ? Number(argv[tolIdx + 1]) : undefined;
 
+/**
+ * Default tolerances, applied per check when --tolerance is not given.
+ *
+ * Decode is tighter than prefill because its argmax guard depends on it. With a
+ * single 2% tolerance, two of the four recorded decode steps had a permitted
+ * absolute error (0.52 and 0.23 at top1 -26 and +11.4) wider than the real
+ * top-2 margin (0.27 and 0.10), so their argmax check was simply skipped. At
+ * 0.5% those allowances fall to 0.13 and 0.04, below all four margins, so the
+ * argmax check actually fires.
+ *
+ * Both values remain far looser than observed drift: self-consistency is exact,
+ * and the attention restructure measured 7e-8 to 2.4e-7.
+ */
+const DEFAULT_TOLERANCE = { prefill: 0.02, decode: 0.005 };
+
 if (!fs.existsSync(WEIGHTS)) {
 	console.error(`Missing weights. Run: npm run bench:fetch`);
 	process.exit(1);
@@ -165,7 +180,7 @@ try {
 		await write(df, decode, `ctx=${decode.contextLen} argmax=${decode.steps.map((s) => s.argmax).join(",")}`);
 	} else {
 		const { prefill, decode } = await evaluate(
-			async ({ tolerance }) => {
+			async ({ tolerance, DEFAULTS }) => {
 				const m = await import("/bench/check.ts");
 				const adapter = await navigator.gpu.requestAdapter();
 				const precision = adapter.features.has("shader-f16") ? "f16" : "f32";
@@ -178,11 +193,15 @@ try {
 					}
 				};
 				return {
-					prefill: await m.runCheck(await load(""), { tolerance }),
-					decode: await m.runDecodeCheck(await load("-decode"), { tolerance }),
+					prefill: await m.runCheck(await load(""), {
+						tolerance: tolerance ?? DEFAULTS.prefill,
+					}),
+					decode: await m.runDecodeCheck(await load("-decode"), {
+						tolerance: tolerance ?? DEFAULTS.decode,
+					}),
 				};
 			},
-			{ tolerance },
+			{ tolerance, DEFAULTS: DEFAULT_TOLERANCE },
 		);
 
 		for (const [label, result] of [
