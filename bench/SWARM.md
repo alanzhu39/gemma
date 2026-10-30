@@ -340,13 +340,33 @@ re-measured rather than remembered.
 | `maxComputeWorkgroupsPerDimension` | **65535** | exceeding it silently no-ops |
 | Workgroup count vs throughput | **flat** 256–32768 | same kernel, verified, 113–140 GB/s throughout |
 
-### Vectorise your loads
+### Coalesce the reduction across lanes, not just the loads
 
-The single largest measured gap: a **vec4** copy kernel reaches 139 GB/s while a
-**scalar** copy of the same bytes reaches 12.5 GB/s. That is an ~11x difference on
-the operation these kernels do most, and it is codegen, not hardware. jax-js's
-logits kernel reads scalar f32 with one accumulator per thread, which is likely
-most of the gap between its 26.6 ms and the ~6.6 ms floor.
+This is the finding that matters, and it survived three independent measurements.
+Same weight matrix, same data, all variants verified against a CPU reference:
+
+| access pattern | ms (160 MiB) | GB/s |
+| --- | --- | --- |
+| row-per-thread (thread owns a row, walks 640 cols) | 9.40 | **17.8** |
+| row-per-thread + vec4 loads | 7.69 | **21.8** |
+| **warp-per-row (32 lanes share one row)** | **3.32** | **50.5** |
+
+jax-js currently does row-per-thread: one accumulator walks a whole 640-element
+row alone, so a warp touches 32 separate rows 2560 B apart. Giving the 32 lanes
+of a warp one row between them, and reducing with `subgroupShuffleXor`, is
+**2.8x** on isolated matvec and is verified correct.
+
+Vectorising loads is worth only ~22%, not the 11x an earlier note here claimed.
+That claim came from a probe with a broken stride and is withdrawn.
+
+**A trap that produced a fake 550 GB/s result:** an early return placed *before*
+a `workgroupBarrier()` is undefined behaviour — the kernel is skipped and you
+time nothing. Any result above the card's ~192 GB/s peak is that bug. Do all
+early exits before any barrier, or avoid barriers entirely by reducing with
+subgroup shuffles.
+
+Note also that row-per-thread is the *worst* measured variant, so "one thread per
+output row" — the design that sounds obvious — actively hurts.
 
 ### Workgroup count is NOT a constraint (refuted)
 
