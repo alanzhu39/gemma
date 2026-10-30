@@ -55,6 +55,12 @@ These are enforced by `bench/bench.ts` and should not be relaxed:
    sequence, so every repeat does the same amount of work and results are
    comparable across runs.
 
+> **On a CPU fallback this is slow.** A full `bench:check` takes 10-25 minutes on
+> SwiftShader, because it prefills 638 tokens and then decodes 4 steps on a CPU
+> rasteriser. Do not wrap it in a short `timeout`: a run that expires mid-way
+> produces no result and looks like a failure. Budget 30 minutes, or wait for a
+> real GPU.
+
 ## Correctness gate
 
 An optimization that changes the model's output is a bug, not a speedup.
