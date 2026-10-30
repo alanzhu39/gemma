@@ -219,3 +219,43 @@ Every reported number should make these distinctions explicit:
 6. **Never reason about an aborted run.** If a run crashed, timed out, or was
    killed, it produced no result. Re-run it. Do not infer what it "would have"
    shown.
+
+## What the profile actually says (as of the first full analysis)
+
+Structural counts are hardware-independent and are the ones to trust on the CPU
+fallback. Wall-clock on SwiftShader is not.
+
+Decode at ctx-1024: **723 dispatches**, 39 per layer (702 of them), plus 21
+step-level. Two orderings disagree, and the disagreement is the finding:
+
+| by wall-clock | | by dispatch count | |
+| --- | --- | --- | --- |
+| logits matvec | 22.2% | norm | 30.2% |
+| KV write | 20.4% | RoPE | 15.8% |
+| MLP | 19.4% | MLP | ~7.5% |
+| attention core | 13.4% | attention | ~15% |
+
+**84% of dispatches use ≤4 workgroups and consume 55.5% of kernel time.** At
+batch 1 this engine is *launch-bound*, not FLOP-bound. That is why optimising
+the biggest wall-clock line item alone will disappoint: the win is in fewer,
+larger dispatches.
+
+Other measured facts worth not re-deriving:
+
+- KV write is **1869× amplified**: 36 KiB of real change against 65.7 MiB of
+  bound work, because `np.where` runs over the whole cache capacity.
+- Position-only tables (masks, slots, RoPE) are rebuilt every step: ~154
+  dispatches, ~21% of launches.
+- One `createBuffer` + `destroy` per dispatch, 46.1 MiB per decode step.
+- Host readback is **not** a problem: 1 per step. The earlier suspicion that
+  sampling serialised the pipeline was wrong.
+- Pad-on-growth is correctly confined to warmup.
+
+Prefill-1024: MLP 41.8%, attention 39.1%, QKV 10.3%. Attention binds 2666 MiB =
+48% of bytes. Decomposed, **QK is 2.00× PV at identical FLOPs**, purely from
+writing the score tensor. So restructuring helps PV, but QK's cost is only
+removable by a fused kernel — that is the argument for P5, measured rather than
+asserted.
+
+**Caveat that must travel with these numbers:** the ms ordering above is CPU
+fallback and was contended. Only the dispatch and byte rankings are exact.
