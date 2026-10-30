@@ -57,6 +57,22 @@ export const NUM_LAYERS = 18;
 export type Gemma3State = {
 	kvCaches: KVCache[];
 	position: number;
+	/**
+	 * The same value as `position`, as an int32 device scalar.
+	 *
+	 * `position` is a plain JS number, so handing it to a jitted function lifts
+	 * it to a constant and the constant is baked into the generated WGSL
+	 * (`result[gidx] = f32(129);`). Every new position therefore produces a new
+	 * shader, and a new shader means a new compute pipeline: the model was
+	 * compiling a pipeline on every decode step and paying an extra dispatch per
+	 * jit call site to materialise the literal.
+	 *
+	 * Carrying the value as a tensor keeps it a buffer read, so one shader serves
+	 * every position. It is advanced on-device rather than being rebuilt from a
+	 * JS number each step, which is what keeps it from being folded back into a
+	 * constant.
+	 */
+	positionTensor: np.Array;
 	collectWeights: boolean;
 	attentionWeights?: np.Array[];
 };
@@ -65,6 +81,7 @@ export function createGemma3State(model: Gemma3, collectWeights = false): Gemma3
 	return {
 		kvCaches: model.layers.map((_, i) => emptyKVCache(isSlidingAttention(i) ? 512 : 0, 256)),
 		position: 0,
+		positionTensor: np.array([0], { dtype: DType.Int32 }).reshape([]),
 		collectWeights,
 	};
 }
@@ -83,7 +100,7 @@ const CACHE_EXPANSION_SIZE = 128;
 
 export function runGemma3Step(
 	{ tokenEmbed, layers, norm }: Gemma3,
-	{ kvCaches, position, collectWeights }: Gemma3State,
+	{ kvCaches, position, positionTensor, collectWeights }: Gemma3State,
 	tokensAr: np.Array,
 ): { latent: np.Array; state: Gemma3State; attentionWeights?: np.Array[] } {
 	// Token embedding weights unused here
@@ -100,10 +117,10 @@ export function runGemma3Step(
 	const attentionWeights: np.Array[] = [];
 
 	const { slidingWindowSlots, slidingWindowMask, globalSlots, globalMask, sequencePositions } =
-		precomputeSlotsAndMasks(position, S, newCapacity, isPrefill);
+		precomputeSlotsAndMasks(positionTensor.ref, S, newCapacity, isPrefill);
 
-	const ropeSliding = precomputeRoPECache(position, S, HEAD_DIM, true);
-	const ropeGlobal = precomputeRoPECache(position, S, HEAD_DIM, false);
+	const ropeSliding = precomputeRoPECache(positionTensor.ref, S, HEAD_DIM, true);
+	const ropeGlobal = precomputeRoPECache(positionTensor.ref, S, HEAD_DIM, false);
 
 	for (let i = 0; i < layers.length; i++) {
 		// If kv cache is not large enough, expand it to next multiple of CACHE_EXPANSION_SIZE.
@@ -125,7 +142,7 @@ export function runGemma3Step(
 			kvCaches[i],
 			slotPositions.ref,
 			x,
-			position,
+			positionTensor.ref,
 			mask.ref,
 			cos.ref,
 			sin.ref,
@@ -139,7 +156,10 @@ export function runGemma3Step(
 		}
 	}
 
-	position = newContextLen;
+	const nextPosition = position + S;
+	// `add` takes ownership of its receiver, and every call above took a `.ref`
+	// of its own, so this consumes the tensor handed in and produces the next.
+	const nextPositionTensor = positionTensor.add(S);
 
 	slidingWindowSlots.dispose();
 	globalSlots.dispose();
@@ -150,7 +170,8 @@ export function runGemma3Step(
 	return {
 		latent: runRMSNorm(norm, x),
 		state: {
-			position,
+			position: nextPosition,
+			positionTensor: nextPositionTensor,
 			kvCaches,
 			collectWeights,
 		},
@@ -361,16 +382,29 @@ export function runAttention(
 	q = applyRoPE(q, cos.ref, sin.ref);
 	k = applyRoPE(k, cos, sin);
 
-	// Update KV cache
-	const writeIndexes = slotPositions.ref
-		.greaterEqual(position.ref)
-		.mul(slotPositions.ref.sub(position.ref));
-	const writeMask = slotPositions.ref
-		.greaterEqual(position.ref)
-		.mul(slotPositions.ref.less(position.ref.add(S)))
-		.reshape([-1, 1]);
-	kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
-	kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
+	// Update KV cache.
+	if (S === 1) {
+		// Decode writes exactly one row, and `slotPositions` is a permutation of
+		// the cache rows, so the row to write is the unique slot holding
+		// `position` (the old `>= position && < position + 1` mask, reduced).
+		// Broadcasting the [1, headDim] row also avoids the capacity-sized gather
+		// the general path needs: no [N, headDim] index vector, no [N, headDim]
+		// gather, and no full-capacity temporary per tensor.
+		const writeMask = slotPositions.ref.equal(position.ref).reshape([-1, 1]);
+		kvCache.k = np.where(writeMask.ref, k.ref, kvCache.k);
+		kvCache.v = np.where(writeMask, v.ref, kvCache.v);
+	} else {
+		// Prefill writes several rows, so build the gather index for them.
+		const writeIndexes = slotPositions.ref
+			.greaterEqual(position.ref)
+			.mul(slotPositions.ref.sub(position.ref));
+		const writeMask = slotPositions.ref
+			.greaterEqual(position.ref)
+			.mul(slotPositions.ref.less(position.ref.add(S)))
+			.reshape([-1, 1]);
+		kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
+		kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
+	}
 
 	if (!isPrefill) {
 		k.dispose();
