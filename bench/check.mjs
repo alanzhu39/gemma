@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { acquireLock } from "./lock.mjs";
 import { chromeArgs, chromeEnv, getGpuDevices, isSoftwareRenderer } from "./chrome.mjs";
+import { execFileSync } from "node:child_process";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
@@ -24,6 +25,28 @@ const GOLDEN_DIR = path.join(HERE, "goldens");
 
 const argv = process.argv.slice(2);
 const record = argv.includes("--record");
+// --record-missing only writes references that do not exist yet, so adding a new
+// check cannot silently rewrite an existing reference (which would erase the
+// evidence that an optimization changed the output).
+const recordMissing = argv.includes("--record-missing");
+const force = argv.includes("--force");
+
+function git(cmd) {
+	return execFileSync("git", cmd, { cwd: ROOT, encoding: "utf8" }).trim();
+}
+
+if (record || recordMissing) {
+	// A reference recorded from a tree with model changes captures those changes
+	// as "correct", which defeats the entire gate.
+	const dirty = git(["status", "--porcelain", "--", "src/", "bench/check.ts"]);
+	if (dirty && !force) {
+		console.error("Refusing to record a golden: the model or check code has uncommitted changes.");
+		console.error(dirty);
+		console.error("\nCommit them first, so the reference is tied to a revision.");
+		console.error("Override with --force only if you are certain this is the intended behaviour.");
+		process.exit(1);
+	}
+}
 const tolIdx = argv.indexOf("--tolerance");
 const tolerance = tolIdx >= 0 ? Number(argv[tolIdx + 1]) : undefined;
 
@@ -91,16 +114,27 @@ try {
 			};
 		});
 
-		const file = path.join(GOLDEN_DIR, `${prefill.precision}.json`);
-		await fsp.writeFile(file, JSON.stringify(prefill, null, 2) + "\n");
-		console.log(`recorded ${path.relative(process.cwd(), file)}`);
-		console.log(`  argmax=${prefill.argmax} latent=${JSON.stringify(prefill.latentShape)}`);
+		const provenance = {
+			gitRev: git(["rev-parse", "HEAD"]),
+			branch: git(["rev-parse", "--abbrev-ref", "HEAD"]),
+			recordedAt: new Date().toISOString(),
+			renderer: rendererString,
+			flags: chromeArgs({ software: argv.includes("--software") }),
+		};
 
-		const df = path.join(GOLDEN_DIR, `${decode.precision}-decode.json`);
-		await fsp.writeFile(df, JSON.stringify(decode, null, 2) + "\n");
-		console.log(`recorded ${path.relative(process.cwd(), df)}`);
-		console.log(`  ctx=${decode.contextLen} steps=${decode.steps.length}`);
-		console.log(`  argmax per step: ${decode.steps.map((s) => s.argmax).join(", ")}`);
+		const write = async (file, doc, label) => {
+			if (recordMissing && fs.existsSync(file)) {
+				console.log(`keeping existing ${path.relative(process.cwd(), file)}`);
+				return;
+			}
+			await fsp.writeFile(file, JSON.stringify({ ...doc, provenance }, null, 2) + "\n");
+			console.log(`recorded ${path.relative(process.cwd(), file)} (${label})`);
+		};
+
+		const file = path.join(GOLDEN_DIR, `${prefill.precision}.json`);
+		await write(file, prefill, `argmax=${prefill.argmax}`);
+		const df = path.join(GOLDEN_DIR, `${prefill.precision}-decode.json`);
+		await write(df, decode, `ctx=${decode.contextLen} argmax=${decode.steps.map((s) => s.argmax).join(",")}`);
 	} else {
 		const { prefill, decode } = await page.evaluate(
 			async ({ tolerance }) => {

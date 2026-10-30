@@ -199,10 +199,13 @@ export async function runCheck(golden: Golden | null, opts: { tolerance?: number
 }
 
 /**
- * Long enough to cross the 512-slot sliding window (so the ring buffer wraps)
- * and to force the global KV cache to grow past its initial capacity.
+ * Chosen so both interesting transitions happen *during* decode:
+ *  - 638 tokens pads the global cache to 640 during prefill, and the first
+ *    decode step crosses 640, forcing a grow-and-repad to 768.
+ *  - The sliding window wraps at 512, well before this, so the ring buffer is
+ *    already cycling when decode starts.
  */
-const DECODE_CONTEXT_LEN = 600;
+const DECODE_CONTEXT_LEN = 638;
 const DECODE_STEPS = 4;
 
 /** Deterministic pseudo-random token ids, reproducible across runs. */
@@ -249,9 +252,20 @@ export async function computeDecodeLogits(
 	const indices = sampleIndices(model.tokenEmbed.shape[0]);
 	const steps: DecodeGolden["steps"] = [];
 
-	let token = tokens[tokens.length - 1];
+	// Feed a fixed token sequence, NOT the model's own argmax.
+	//
+	// Sampling the model's output back in makes each step depend on the previous
+	// step's exact numerics. A legitimate change in summation order can flip a
+	// near-tie at step 0, and every later step then diverges for reasons that
+	// have nothing to do with correctness. A fixed input sequence keeps each
+	// step's comparison independent.
 	for (let s = 0; s < DECODE_STEPS; s++) {
-		const out = runGemma3Step(tree.ref(model), state, np.array([token], { dtype: np.uint32 }));
+		const token = tokens[(DECODE_CONTEXT_LEN - DECODE_STEPS + s) % tokens.length] ^ 0x55;
+		const out = runGemma3Step(
+			tree.ref(model),
+			state,
+			np.array([Math.abs(token) % 200000], { dtype: np.uint32 }),
+		);
 		await blockUntilReady(out.latent);
 		state = out.state;
 
@@ -262,9 +276,6 @@ export async function computeDecodeLogits(
 		for (let i = 1; i < all.length; i++) if (all[i] > all[argmax]) argmax = i;
 
 		steps.push({ position: state.position, logits: indices.map((i) => Number(all[i])), argmax });
-		// Feed the model's own choice back in, so the trajectory is realistic and
-		// any drift compounds instead of being masked by fresh random input.
-		token = argmax;
 	}
 
 	state.kvCaches.forEach((c) => {
@@ -310,12 +321,24 @@ export async function runDecodeCheck(
 	const tolerance = opts.tolerance ?? 0.02;
 	let worstRel = 0;
 	let argmaxMismatch = -1;
+	let nearTieSteps = 0;
 	for (let i = 0; i < actual.steps.length; i++) {
 		const a = actual.steps[i];
 		const g = golden.steps[i];
 		if (!g) continue;
 		worstRel = Math.max(worstRel, relativeError(a.logits, g.logits));
-		if (a.argmax !== g.argmax && argmaxMismatch < 0) argmaxMismatch = i;
+		if (a.argmax !== g.argmax && argmaxMismatch < 0) {
+			// Only a *clear* argmax change is a failure. If the golden's top two
+			// logits were within noise of each other, a reordering is expected from
+			// any change in summation order and says nothing about correctness.
+			const sorted = [...g.logits].sort((x, y) => y - x);
+			const margin = Math.abs(sorted[0] - sorted[1]);
+			if (margin > 0.5) {
+				argmaxMismatch = i;
+			} else {
+				nearTieSteps++;
+			}
+		}
 	}
 
 	const ok = finite && spread && argmaxMismatch < 0 && worstRel <= tolerance;
@@ -325,9 +348,10 @@ export async function runDecodeCheck(
 		golden,
 		worstRel,
 		argmaxMismatch,
+		nearTieSteps,
 		tolerance,
 		message: ok
-			? `decode logits match golden across ${actual.steps.length} steps (max rel err ${worstRel.toExponential(2)})`
+			? `decode logits match golden across ${actual.steps.length} steps (max rel err ${worstRel.toExponential(2)}${nearTieSteps ? `, ${nearTieSteps} near-tie argmax flip(s) tolerated` : ""})`
 			: [
 					!finite && "non-finite decode logits",
 					!spread && "decode logits collapsed",

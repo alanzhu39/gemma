@@ -18,7 +18,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
 import { acquireLock } from "./lock.mjs";
-import { sampleContention } from "./contention.mjs";
+import { startContentionSample } from "./contention.mjs";
 import { chromeArgs, chromeEnv, getGpuDevices, isSoftwareRenderer } from "./chrome.mjs";
 import { execFileSync } from "node:child_process";
 
@@ -104,9 +104,9 @@ async function main() {
 		});
 	}
 
-	// Note system load before and after: on a shared box, a busy neighbour can
-	// dominate the measurement and produce a fake "regression".
-	const loadBefore = sampleContention();
+	// Measure how much CPU *other* processes used while we ran. Load average is
+	// useless here because it counts the benchmark's own threads.
+	const finishContention = startContentionSample();
 
 	const { server, base } = await startVite();
 	const url = `${base}/bench/index.html`;
@@ -149,7 +149,7 @@ async function main() {
 	await server.close();
 	await release();
 
-	const loadAfter = sampleContention();
+	const contention = finishContention();
 
 	// Trust the browser's own renderer string over the adapter feature heuristics
 	// in the page: those cannot see through a masked adapter.
@@ -159,8 +159,7 @@ async function main() {
 		rendererString,
 		gpuDevices,
 		isSoftwareRenderer: sw,
-		loadBefore,
-		loadAfter,
+		contention,
 	};
 	result.git = gitProvenance();
 
@@ -194,11 +193,11 @@ function printSummary(result, file) {
 		console.log("!! WARNING: software renderer (SwiftShader). Numbers are CPU-bound and");
 		console.log("!! will not reflect real-GPU performance. Use for relative comparisons only.");
 	}
-	const load = sysInfo.loadAfter ?? sysInfo.loadBefore;
-	if (load && !load.quiet) {
-		console.log(`!! WARNING: machine was busy during the run (load ${load.load.one.toFixed(1)}`);
-		console.log(`!! on ${load.cores} cores, utilisation ${load.utilisation}x). Another process`);
-		console.log("!! competed for CPU/GPU. These numbers are not comparable to a quiet run.");
+	const c = sysInfo.contention;
+	if (c && c.quiet === false) {
+		console.log(`!! WARNING: other processes used ${(c.otherUtilisation * 100).toFixed(0)}% of this`);
+		console.log(`!! ${c.cores}-core machine while the benchmark ran. These numbers describe`);
+		console.log("!! the contention as much as the code; do not compare them to a quiet run.");
 	}
 	console.log("");
 	const kindHeader = { prefill: "Prefill", decode: "Decode", batch: "Batch" };

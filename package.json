@@ -18,7 +18,8 @@
 		"bench:setup": "bash bench/setup-chrome-deps.sh && npx playwright install chromium",
 		"bench:workloads": "node bench/scripts/make-workloads.mjs",
 		"bench:check": "node bench/check.mjs",
-		"bench:golden": "node bench/check.mjs --record"
+		"bench:golden": "node bench/check.mjs --record",
+		"bench:golden-missing": "node bench/check.mjs --record-missing"
 	},
 	"devDependencies": {
 		"@eslint/compat": "^2.0.4",

@@ -57,17 +57,23 @@ if (!baseDoc || !latestDoc) {
 	process.exit(2);
 }
 
-// Timing on a contended machine says nothing about the code under test. If the
-// current run was noisy, its numbers are not comparable to a quiet baseline.
-const newLoad = latestDoc.sysInfo?.loadAfter ?? latestDoc.sysInfo?.loadBefore;
-if (newLoad && newLoad.quiet === false) {
-  console.error(
-    `Cannot compare: the current run was measured on a busy machine ` +
-      `(load ${newLoad.load.one.toFixed(1)} on ${newLoad.cores} cores, ` +
-      `${newLoad.utilisation}x utilisation).`,
-  );
-  console.error("Wait for the machine to be quiet, or the numbers describe the contention, not the code.");
-  process.exit(2);
+// Timing on a contended machine says nothing about the code under test. Both
+// sides must have been quiet: a slow baseline recorded on a busy machine would
+// inflate every later "speedup" and the gate would happily accept it.
+for (const [label, doc] of [
+  ["baseline", baseDoc],
+  ["current", latestDoc],
+]) {
+  const c = doc.sysInfo?.contention;
+  if (c && c.quiet === false) {
+    console.error(
+      `Cannot compare: the ${label} was measured while other processes used ` +
+        `${(c.otherUtilisation * 100).toFixed(0)}% of the machine ` +
+        `(${c.method}, ${c.cores} cores).`,
+    );
+    console.error("Re-measure on a quiet machine: these numbers describe the contention, not the code.");
+    process.exit(2);
+  }
 }
 
 // A comparison across different renderers/precisions is meaningless.
@@ -96,6 +102,16 @@ if (baseSys.precision !== newSys.precision) {
 // are wildly different machines. Compare the renderer too.
 const baseRenderer = baseSys.rendererString ?? "";
 const newRenderer = newSys.rendererString ?? "";
+
+// An unknown renderer must not be silently treated as "hardware": two empty
+// strings would compare equal and let a CPU run stand in for a GPU one.
+if (!baseRenderer || !newRenderer) {
+  console.error(
+    `Cannot compare: renderer unknown (baseline "${baseRenderer}", current "${newRenderer}").`,
+  );
+  process.exit(2);
+}
+
 const norm = (r) => (r.match(/SwiftShader|llvmpipe/i)?.[0] ?? r.trim()).toLowerCase();
 if (norm(baseRenderer) !== norm(newRenderer)) {
 	console.error(

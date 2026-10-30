@@ -43,11 +43,58 @@ function readHolder() {
 }
 
 /**
- * Acquire the lock. Returns an async release function.
+ * Acquire the lock.
+ *
+ * Returns a *thenable* rather than a native Promise, deliberately. Acquisition
+ * only begins when it is awaited:
+ *
+ *     const release = await acquireLock();
+ *
+ * If a caller forgets the `await`, nothing is acquired and the process fails
+ * loudly on the next tick, instead of silently running without the lock and
+ * producing numbers that collide with a concurrent run. A native Promise would
+ * not let us detect that, because `await` on one bypasses the user-visible
+ * `.then`.
  *
  * @param {{ wait?: boolean, onWait?: (holder: object) => void }} opts
  */
-export async function acquireLock({ wait = true, onWait } = {}) {
+export function acquireLock(opts = {}) {
+	let started = false;
+	let promise = null;
+
+	const begin = () => {
+		if (!promise) promise = acquireInner(opts);
+		return promise;
+	};
+
+	const thenable = {
+		then(onFulfilled, onRejected) {
+			started = true;
+			return begin().then(onFulfilled, onRejected);
+		},
+		catch(onRejected) {
+			return begin().catch(onRejected);
+		},
+		finally(onFinally) {
+			return begin().finally(onFinally);
+		},
+	};
+
+	// If nobody awaited within a tick, the caller is using the lock wrongly.
+	setTimeout(() => {
+		if (!started) {
+			console.error(
+				"[bench] acquireLock() was not awaited. Nothing was locked.\n" +
+					"         Use: const release = await acquireLock();",
+			);
+			process.exit(1);
+		}
+	}, 0);
+
+	return thenable;
+}
+
+async function acquireInner({ wait = true, onWait } = {}) {
 	fs.mkdirSync(path.dirname(LOCK), { recursive: true });
 	let announced = false;
 
@@ -92,11 +139,17 @@ export async function acquireLock({ wait = true, onWait } = {}) {
 			}
 
 			if (!pidAlive(holder.pid)) {
+				// Two waiters can both see a dead holder. Deleting blindly would let
+				// the slower one remove a lock the faster one just created, so only
+				// remove the file if it still holds the dead pid we observed.
 				console.warn(`[bench] clearing lock left by dead process ${holder.pid}`);
-				try {
-					fs.unlinkSync(LOCK);
-				} catch {
-					// Another waiter got there first.
+				const still = readHolder();
+				if (still && still.pid === holder.pid) {
+					try {
+						fs.unlinkSync(LOCK);
+					} catch {
+						// Another waiter won; loop and re-read.
+					}
 				}
 				continue;
 			}
