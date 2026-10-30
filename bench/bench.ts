@@ -105,11 +105,23 @@ function pct(xs: number[], p: number): number {
 }
 
 function summarize(xs: number[]) {
+	const min = Math.min(...xs);
+	const p90 = pct(xs, 90);
 	return {
 		median: median(xs),
-		min: Math.min(...xs),
-		p90: pct(xs, 90),
+		min,
+		p90,
 		mean: xs.reduce((a, b) => a + b, 0) / xs.length,
+		/**
+		 * How noisy this measurement was, as p90/min.
+		 *
+		 * This is the signal that actually matters for trustworthiness, and it
+		 * works the same on a CPU rasteriser and on real hardware. CPU contention
+		 * is a useful early warning but it is not the same thing: a GPU run can be
+		 * 95% CPU-contended and still perfectly stable, because the host thread
+		 * only submits commands. Measured on a GTX 1060, exactly that happened.
+		 */
+		spread: Number((p90 / Math.max(1e-9, min)).toFixed(3)),
 	};
 }
 
@@ -292,7 +304,7 @@ export async function runBenchmarks(workloads: Workloads, opts: BenchOptions = {
 			ms: s.median,
 			tokens: w.tokens.length,
 			tps: (w.tokens.length * 1000) / s.median,
-			detail: { minMs: s.min, p90Ms: s.p90, meanMs: s.mean, runs: repeats },
+			detail: { minMs: s.min, p90Ms: s.p90, meanMs: s.mean, spread: s.spread, runs: repeats },
 		});
 	}
 
@@ -318,6 +330,7 @@ export async function runBenchmarks(workloads: Workloads, opts: BenchOptions = {
 				stepsPerRun: w.steps,
 				minMs: s.min,
 				p90Ms: s.p90,
+				spread: s.spread,
 				runs: repeats,
 			},
 		});

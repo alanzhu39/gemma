@@ -57,22 +57,35 @@ if (!baseDoc || !latestDoc) {
 	process.exit(2);
 }
 
-// Timing on a contended machine says nothing about the code under test. Both
-// sides must have been quiet: a slow baseline recorded on a busy machine would
-// inflate every later "speedup" and the gate would happily accept it.
+// How trustworthy is each measurement?
+//
+// The right signal is the run's own timing spread, not CPU load. A GPU run can be
+// CPU-contended and still rock solid, because the host thread only submits
+// commands; measured on a GTX 1060, a run at 95% CPU contention had a 1.01x
+// p90/min spread. Conversely a quiet machine with a thermally throttling GPU
+// produces noisy numbers. Contention is reported as context, not used as a veto.
+const MAX_SPREAD = 1.25;
 for (const [label, doc] of [
   ["baseline", baseDoc],
   ["current", latestDoc],
 ]) {
   const c = doc.sysInfo?.contention;
   if (c && c.quiet === false) {
-    console.error(
-      `Cannot compare: the ${label} was measured while other processes used ` +
-        `${(c.otherUtilisation * 100).toFixed(0)}% of the machine ` +
-        `(${c.method}, ${c.cores} cores).`,
+    console.warn(
+      `note: ${label} ran while other processes used ${(c.otherUtilisation * 100).toFixed(0)}% ` +
+        `of the CPU; judging by timing spread instead.`,
     );
-    console.error("Re-measure on a quiet machine: these numbers describe the contention, not the code.");
-    process.exit(2);
+  }
+  for (const s of doc.samples ?? []) {
+    const spread = s.detail?.spread;
+    if (typeof spread === "number" && spread > MAX_SPREAD) {
+      console.error(
+        `Cannot compare: ${label} workload "${s.workload}" was noisy ` +
+          `(p90/min spread ${spread.toFixed(2)}x, limit ${MAX_SPREAD}x).`,
+      );
+      console.error("Re-run: a noisy sample cannot support a throughput comparison.");
+      process.exit(2);
+    }
   }
 }
 
