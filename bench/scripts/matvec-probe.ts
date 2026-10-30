@@ -1,4 +1,19 @@
-/** Why is the logits matvec ~1.6s when the GPU does 559 GB/s? */
+/**
+ * How does matvec cost scale with the number of rows?
+ *
+ * This measures the logits projection ([1,640] x [640,V]) at several vocabulary
+ * sizes. The result is what matters: cost is exactly linear in rows read
+ * (4096: 2.3 ms, 65536: 113.7 ms, 262144: 461.5 ms), so the projection is bound
+ * by how it reads the weight matrix, not by arithmetic or dispatch count.
+ *
+ * Deliberately does NOT report a bandwidth figure. An earlier version tried to,
+ * and produced 559 GB/s and then 2386 GB/s on a card that nominally does 192 -
+ * both impossible. The measurement was wrong (uninitialised buffers, write
+ * contention from every thread to one address, and timing queue submission
+ * rather than completion), and a wrong number here is worse than none. What
+ * survives scrutiny is the scaling relationship, measured through jax-js's own
+ * readback so completion is guaranteed.
+ */
 import { blockUntilReady, defaultDevice, init, numpy as np, tree } from "@jax-js/jax";
 import { safetensors } from "@jax-js/loaders";
 import { loadModelF32 } from "../f32-model";
