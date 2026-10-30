@@ -345,19 +345,31 @@ re-measured rather than remembered.
 This is the finding that matters, and it survived three independent measurements.
 Same weight matrix, same data, all variants verified against a CPU reference:
 
-| access pattern | ms (160 MiB) | GB/s |
-| --- | --- | --- |
-| row-per-thread (thread owns a row, walks 640 cols) | 9.40 | **17.8** |
-| row-per-thread + vec4 loads | 7.69 | **21.8** |
-| **warp-per-row (32 lanes share one row)** | **3.32** | **50.5** |
+Measured across three working-set sizes, which turns out to matter enormously:
+
+| working set | row-per-thread | + vec4 | **warp-per-row** |
+| --- | --- | --- | --- |
+| 40 MiB (65k rows) | 18.1 | 20.9 | 53.5 |
+| 80 MiB (131k rows) | 21.8 | 24.7 | 82.1 |
+| **160 MiB (262k rows — our real shape)** | **22.8** | **24.8** | **103.8** |
+
+The warp-per-row advantage *grows* with size, because small passes do not have
+enough workgroups to hide latency and are latency-bound rather than
+bandwidth-bound. **Always measure at the real shape**: an earlier 160 MiB run
+reported 50.5 GB/s for the same kernel, and that understates the real workload by
+2x. Two people reported "contradictory" figures for this and both were correct —
+they had measured different sizes.
 
 jax-js currently does row-per-thread: one accumulator walks a whole 640-element
 row alone, so a warp touches 32 separate rows 2560 B apart. Giving the 32 lanes
 of a warp one row between them, and reducing with `subgroupShuffleXor`, is
-**2.8x** on isolated matvec and is verified correct.
+**4.1x** on isolated matvec at the real shape, verified correct (0 bad rows across
+262144).
 
-Vectorising loads is worth only ~22%, not the 11x an earlier note here claimed.
-That claim came from a probe with a broken stride and is withdrawn.
+Vectorising loads is worth only ~9% (22.8 vs 24.8), not the 11x an earlier note
+here claimed. That claim came from a probe with a broken stride and is withdrawn.
+Combining vec4 *with* warp-per-row adds nothing measurable (~0.4%) — the load path
+is already at the ceiling, so use scalar and skip the complexity.
 
 **A trap that produced a fake 550 GB/s result:** an early return placed *before*
 a `workgroupBarrier()` is undefined behaviour — the kernel is skipped and you
