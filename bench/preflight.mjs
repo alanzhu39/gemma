@@ -15,22 +15,17 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { chromeArgs, chromeEnv } from "./chrome.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-function chromeEnv() {
-	const a = path.join(HERE, ".cache", "chrome-deps", "usr", "lib", "x86_64-linux-gnu");
-	const b = path.join(HERE, ".cache", "chrome-deps", "lib", "x86_64-linux-gnu");
-	const parts = [a, b].filter((p) => fs.existsSync(p));
-	if (!parts.length) return {};
-	const existing = process.env.LD_LIBRARY_PATH ? `:${process.env.LD_LIBRARY_PATH}` : "";
-	return { LD_LIBRARY_PATH: parts.join(":") + existing };
-}
 
 const browser = await chromium.launch({
 	headless: true,
+	// Shared with the benchmark and the gate, so preflight can never report a
+	// different renderer than the one the real runs actually use.
 	env: { ...process.env, ...chromeEnv() },
-	args: ["--no-sandbox", "--enable-unsafe-webgpu", "--ignore-gpu-blocklist", "--disable-dev-shm-usage"],
+	args: chromeArgs(),
 });
 
 // WebGPU requires a secure context. `about:blank` and `data:` URLs are not

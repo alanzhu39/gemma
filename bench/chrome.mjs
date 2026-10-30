@@ -27,7 +27,20 @@ export function chromeArgs({ software = false } = {}) {
 		"--ignore-gpu-blocklist",
 		"--disable-dev-shm-usage",
 	];
-	return software ? [...base, "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] : base;
+	if (software) {
+		return [...base, "--use-angle=swiftshader", "--enable-unsafe-swiftshader"];
+	}
+	// Without these, headless Chromium selects ANGLE's SwiftShader (CPU) backend
+	// even when a driver is installed and the device node is accessible. Measured
+	// on this machine: default -> SwiftShader, with these flags -> NVK on the
+	// GTX 1060. They are harmless on a machine with no Vulkan driver: Chromium
+	// falls back on its own.
+	return [
+		...base,
+		"--enable-features=Vulkan",
+		"--use-angle=vulkan",
+		"--use-vulkan=native",
+	];
 }
 
 /**
@@ -42,7 +55,12 @@ export function chromeEnv() {
 	const parts = [a, b].filter((p) => fs.existsSync(p));
 	if (!parts.length) return {};
 	const existing = process.env.LD_LIBRARY_PATH ? `:${process.env.LD_LIBRARY_PATH}` : "";
-	return { LD_LIBRARY_PATH: parts.join(":") + existing };
+	// NVK refuses to probe Pascal unless this opt-in is set; without it the
+	// driver reports zero devices and Chromium silently uses SwiftShader.
+	return {
+		LD_LIBRARY_PATH: parts.join(":") + existing,
+		NVK_I_WANT_A_BROKEN_VULKAN_DRIVER: "1",
+	};
 }
 
 /**
