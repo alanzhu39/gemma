@@ -1,0 +1,202 @@
+{
+	"samples": [
+		{
+			"workload": "prefill-128",
+			"kind": "prefill",
+			"ms": 105.90000009536743,
+			"tokens": 128,
+			"tps": 1208.6874398935843,
+			"detail": {
+				"minMs": 103.5,
+				"p90Ms": 115.2000002861023,
+				"meanMs": 109.05714280264718,
+				"spread": 1.113,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "prefill-512",
+			"kind": "prefill",
+			"ms": 439,
+			"tokens": 512,
+			"tps": 1166.2870159453303,
+			"detail": {
+				"minMs": 424.09999990463257,
+				"p90Ms": 442.2000002861023,
+				"meanMs": 441.10000010899137,
+				"spread": 1.043,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "prefill-1024",
+			"kind": "prefill",
+			"ms": 997.7000002861023,
+			"tokens": 1024,
+			"tps": 1026.3606291534088,
+			"detail": {
+				"minMs": 991.8000001907349,
+				"p90Ms": 1014.0999999046326,
+				"meanMs": 1001.0571428707668,
+				"spread": 1.022,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "decode-ctx128",
+			"kind": "decode",
+			"ms": 123.53437499701977,
+			"tokens": 1,
+			"tps": 8.094912853399101,
+			"detail": {
+				"contextLen": 128,
+				"stepsPerRun": 32,
+				"minMs": 117.13750000298023,
+				"p90Ms": 125.42499999701977,
+				"spread": 1.071,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "decode-ctx1024",
+			"kind": "decode",
+			"ms": 120.6656249910593,
+			"tokens": 1,
+			"tps": 8.287364359767704,
+			"detail": {
+				"contextLen": 1024,
+				"stepsPerRun": 32,
+				"minMs": 114.19374999403954,
+				"p90Ms": 123.64374999701977,
+				"spread": 1.083,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "batch-1",
+			"kind": "batch",
+			"ms": 125.8937499821186,
+			"tokens": 1,
+			"tps": 7.943206077680866,
+			"detail": {
+				"batchSize": 1,
+				"totalTps": 7.943206077680866,
+				"batchSupported": 0,
+				"minMs": 111.96875,
+				"p90Ms": 128.57499998807907,
+				"spread": 1.148,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "batch-2",
+			"kind": "batch",
+			"ms": 115.13750000298023,
+			"tokens": 1,
+			"tps": 8.685267614583571,
+			"detail": {
+				"batchSize": 2,
+				"totalTps": 17.370535229167142,
+				"batchSupported": 0,
+				"minMs": 113.04999999701977,
+				"p90Ms": 119.09999999403954,
+				"spread": 1.054,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "batch-4",
+			"kind": "batch",
+			"ms": 108.30156249552965,
+			"tokens": 1,
+			"tps": 9.233477125884281,
+			"detail": {
+				"batchSize": 4,
+				"totalTps": 36.933908503537126,
+				"batchSupported": 0,
+				"minMs": 106.13906249403954,
+				"p90Ms": 109.13124999403954,
+				"spread": 1.028,
+				"runs": 7
+			}
+		}
+	],
+	"sysInfo": {
+		"adapterInfo": {},
+		"isSoftwareRenderer": false,
+		"precision": "f32",
+		"userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.8078.4 Safari/537.36",
+		"backend": "webgpu",
+		"adaptiveFallback": false,
+		"rendererString": "ANGLE (NVIDIA, Vulkan 1.3.277 (NVIDIA NVIDIA GeForce GTX 1060 6GB (0x00001C03)), NVIDIA-550.163.1.0)",
+		"gpuDevices": [
+			"ANGLE (NVIDIA, Vulkan 1.3.277 (NVIDIA NVIDIA GeForce GTX 1060 6GB (0x00001C03)), NVIDIA-550.163.1.0)"
+		],
+		"contention": {
+			"method": "proc-cpu",
+			"cores": 4,
+			"elapsedSec": 210.4,
+			"ownCpuSec": 2,
+			"otherCpuSec": 821,
+			"otherUtilisation": 0.98,
+			"quiet": false
+		}
+	},
+	"generatedAt": "2026-10-30T21:16:06.113Z",
+	"git": {
+		"rev": "d69b23b294f30990bc4685b1d8434dd35f61e6e1",
+		"branch": "perf",
+		"dirty": false
+	},
+	"comparison_vs_baseline": {
+		"prefill-128": {
+			"baseline": 1123.79,
+			"now": 1208.69,
+			"deltaPct": 7.6,
+			"spread": 1.113
+		},
+		"prefill-512": {
+			"baseline": 1136.51,
+			"now": 1166.29,
+			"deltaPct": 2.6,
+			"spread": 1.043
+		},
+		"prefill-1024": {
+			"baseline": 990.23,
+			"now": 1026.36,
+			"deltaPct": 3.6,
+			"spread": 1.022
+		},
+		"decode-ctx128": {
+			"baseline": 6.74,
+			"now": 8.09,
+			"deltaPct": 20.0,
+			"spread": 1.071
+		},
+		"decode-ctx1024": {
+			"baseline": 6.74,
+			"now": 8.29,
+			"deltaPct": 23.0,
+			"spread": 1.083
+		},
+		"batch-1": {
+			"baseline": 6.59,
+			"now": 7.94,
+			"deltaPct": 20.6,
+			"spread": 1.148
+		},
+		"batch-2": {
+			"baseline": 7.67,
+			"now": 8.69,
+			"deltaPct": 13.2,
+			"spread": 1.054
+		},
+		"batch-4": {
+			"baseline": 8.35,
+			"now": 9.23,
+			"deltaPct": 10.6,
+			"spread": 1.028
+		}
+	},
+	"note": "Post-merge measurement. All spreads < 1.25 so this run passes the noise gate, unlike the immediately preceding run where prefill-128 and decode-ctx1024 were 1.42x and 1.37x and compare.mjs correctly refused it. Contention note: updown-recorder still holds ~60% of one core in both baseline and this run, so the comparison is like-for-like."
+}
