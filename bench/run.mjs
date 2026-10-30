@@ -18,6 +18,28 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
 import { acquireLock } from "./lock.mjs";
+import { sampleContention } from "./contention.mjs";
+import { chromeArgs, chromeEnv, getGpuDevices, isSoftwareRenderer } from "./chrome.mjs";
+import { execFileSync } from "node:child_process";
+
+/**
+ * Which code produced these numbers. Without this, a result file cannot be tied
+ * to a revision, and "it got faster" is unverifiable.
+ */
+function gitProvenance() {
+	try {
+		const rev = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
+		const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+			cwd: ROOT,
+			encoding: "utf8",
+		}).trim();
+		const dirty =
+			execFileSync("git", ["status", "--porcelain"], { cwd: ROOT, encoding: "utf8" }).trim() !== "";
+		return { rev, branch, dirty };
+	} catch {
+		return null;
+	}
+}
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
@@ -37,39 +59,6 @@ function parseArgs(argv) {
 		else if (a === "--no-wait") out.noWait = true;
 	}
 	return out;
-}
-
-/**
- * Chromium flags for WebGPU.
- *
- * Deliberately does NOT pin an ANGLE backend by default: pinning one is what
- * would hide a real GPU on a normal machine. `--software` forces the CPU
- * fallback, which is only for smoke-testing the harness itself.
- */
-function chromeArgs({ software = false } = {}) {
-	const base = [
-		"--no-sandbox",
-		// WebGPU is not on by default in headless Chromium.
-		"--enable-unsafe-webgpu",
-		"--ignore-gpu-blocklist",
-		"--disable-dev-shm-usage",
-	];
-	return software ? [...base, "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] : base;
-}
-
-/**
- * Chrome needs a pile of system libraries that are not installed here and that
- * we cannot install without root. bench/setup-chrome-deps.sh downloads them as
- * .deb files and unpacks them under bench/.cache/chrome-deps, so we just point
- * the loader at them.
- */
-function chromeEnv() {
-	const deps = path.join(HERE, ".cache", "chrome-deps", "usr", "lib", "x86_64-linux-gnu");
-	const deps2 = path.join(HERE, ".cache", "chrome-deps", "lib", "x86_64-linux-gnu");
-	const parts = [deps, deps2].filter((p) => fs.existsSync(p));
-	if (!parts.length) return {};
-	const existing = process.env.LD_LIBRARY_PATH ? `:${process.env.LD_LIBRARY_PATH}` : "";
-	return { LD_LIBRARY_PATH: parts.join(":") + existing };
 }
 
 async function startVite() {
@@ -100,7 +89,7 @@ async function main() {
 
 	// Serialise runs: agents share this machine, and two concurrent benchmarks
 	// contend for the same CPU/GPU and invalidate both sets of numbers.
-	const release = acquireLock({
+	const release = await acquireLock({
 		wait: !args.noWait,
 		onWait: (holder) =>
 			console.log(
@@ -108,7 +97,16 @@ async function main() {
 			),
 	});
 	// Release on every exit path, including Ctrl-C.
-	for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => (release(), process.exit(130)));
+	for (const sig of ["SIGINT", "SIGTERM"]) {
+		process.on(sig, () => {
+			void release();
+			process.exit(130);
+		});
+	}
+
+	// Note system load before and after: on a shared box, a busy neighbour can
+	// dominate the measurement and produce a fake "regression".
+	const loadBefore = sampleContention();
 
 	const { server, base } = await startVite();
 	const url = `${base}/bench/index.html`;
@@ -119,14 +117,9 @@ async function main() {
 		args: chromeArgs({ software: args.software }),
 	});
 
-	// Chromium does not expose GPUAdapter.info in this build, so ask the browser
-	// itself what renderer it is using. This is the only reliable way to tell a
-	// hardware GPU from a CPU fallback here.
-	const gpuDevices = await browser
-		.newBrowserCDPSession()
-		.then((s) => s.send("SystemInfo.getInfo"))
-		.then((info) => (info.gpu?.devices ?? []).map((d) => d.deviceString ?? ""))
-		.catch(() => []);
+	// Chromium masks GPUAdapter.info and reports isFallbackAdapter=false even for
+	// SwiftShader, so ask the browser which renderer it actually chose.
+	const gpuDevices = await getGpuDevices(browser);
 	const rendererString = gpuDevices[0] ?? "";
 
 	const page = await browser.newPage();
@@ -154,17 +147,22 @@ async function main() {
 
 	await browser.close();
 	await server.close();
-	release();
+	await release();
+
+	const loadAfter = sampleContention();
 
 	// Trust the browser's own renderer string over the adapter feature heuristics
 	// in the page: those cannot see through a masked adapter.
-	const sw = /swiftshader|llvmpipe|software/i.test(rendererString);
+	const sw = isSoftwareRenderer(rendererString);
 	result.sysInfo = {
 		...result.sysInfo,
 		rendererString,
 		gpuDevices,
 		isSoftwareRenderer: sw,
+		loadBefore,
+		loadAfter,
 	};
+	result.git = gitProvenance();
 
 	await fsp.mkdir(RESULTS_DIR, { recursive: true });
 	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -182,6 +180,9 @@ async function main() {
 
 	if (!args.json) {
 		console.log(`\nWrote ${path.relative(process.cwd(), file)}`);
+		if (result.git?.dirty) {
+			console.log("note: working tree was dirty, so this result is not reproducible from a commit");
+		}
 	}
 }
 
@@ -192,6 +193,12 @@ function printSummary(result, file) {
 	if (sysInfo.isSoftwareRenderer) {
 		console.log("!! WARNING: software renderer (SwiftShader). Numbers are CPU-bound and");
 		console.log("!! will not reflect real-GPU performance. Use for relative comparisons only.");
+	}
+	const load = sysInfo.loadAfter ?? sysInfo.loadBefore;
+	if (load && !load.quiet) {
+		console.log(`!! WARNING: machine was busy during the run (load ${load.load.one.toFixed(1)}`);
+		console.log(`!! on ${load.cores} cores, utilisation ${load.utilisation}x). Another process`);
+		console.log("!! competed for CPU/GPU. These numbers are not comparable to a quiet run.");
 	}
 	console.log("");
 	const kindHeader = { prefill: "Prefill", decode: "Decode", batch: "Batch" };

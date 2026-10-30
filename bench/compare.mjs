@@ -57,13 +57,51 @@ if (!baseDoc || !latestDoc) {
 	process.exit(2);
 }
 
+// Timing on a contended machine says nothing about the code under test. If the
+// current run was noisy, its numbers are not comparable to a quiet baseline.
+const newLoad = latestDoc.sysInfo?.loadAfter ?? latestDoc.sysInfo?.loadBefore;
+if (newLoad && newLoad.quiet === false) {
+  console.error(
+    `Cannot compare: the current run was measured on a busy machine ` +
+      `(load ${newLoad.load.one.toFixed(1)} on ${newLoad.cores} cores, ` +
+      `${newLoad.utilisation}x utilisation).`,
+  );
+  console.error("Wait for the machine to be quiet, or the numbers describe the contention, not the code.");
+  process.exit(2);
+}
+
 // A comparison across different renderers/precisions is meaningless.
 const baseSys = baseDoc.sysInfo ?? {};
 const newSys = latestDoc.sysInfo ?? {};
+
+// A missing precision means the result predates this field (or was hand-written).
+// Comparing it anyway is how a CPU number silently becomes a GPU baseline.
+if (!baseSys.precision || !newSys.precision) {
+	console.error(
+		`Cannot compare: missing precision ` +
+			`(baseline ${baseSys.precision ?? "none"}, current ${newSys.precision ?? "none"}). ` +
+			`Re-record the result with the current harness.`,
+	);
+	process.exit(2);
+}
 if (baseSys.precision !== newSys.precision) {
 	console.error(
 		`Cannot compare: baseline precision ${baseSys.precision} vs ${newSys.precision}. ` +
 			`Re-record the baseline on the same hardware.`,
+	);
+	process.exit(2);
+}
+
+// Precision is not enough: an f32 run on SwiftShader and an f32 run on a GPU
+// are wildly different machines. Compare the renderer too.
+const baseRenderer = baseSys.rendererString ?? "";
+const newRenderer = newSys.rendererString ?? "";
+const norm = (r) => (r.match(/SwiftShader|llvmpipe/i)?.[0] ?? r.trim()).toLowerCase();
+if (norm(baseRenderer) !== norm(newRenderer)) {
+	console.error(
+		`Cannot compare: different renderers.\n` +
+			`  baseline: ${baseRenderer || "(unrecorded)"}\n` +
+			`  current:  ${newRenderer || "(unrecorded)"}`,
 	);
 	process.exit(2);
 }
@@ -73,9 +111,14 @@ const base = byName(baseDoc);
 const latest = byName(latestDoc);
 
 const rows = [];
-for (const [name, now] of latest) {
-	const before = base.get(name);
-	if (!before) continue;
+const missing = [];
+for (const [name, before] of base) {
+	const now = latest.get(name);
+	if (!now) {
+		// A workload in the baseline that the current run skipped.
+		missing.push(name);
+		continue;
+	}
 	rows.push({
 		name,
 		kind: now.kind,
@@ -111,6 +154,21 @@ if (!args.json) {
 }
 
 const problems = [];
+
+// A partial run cannot demonstrate anything: `--only prefill-128` would leave
+// the target workloads unmeasured and silently "pass".
+if (missing.length) {
+	problems.push(
+		`run is missing ${missing.length} workload(s) present in the baseline: ${missing.join(", ")}`,
+	);
+}
+
+// The target workloads must actually be present, or the gate is meaningless.
+for (const required of [TARGET.workloads.decode, TARGET.workloads.prefill]) {
+	if (!rows.some((r) => r.name === required)) {
+		problems.push(`target workload "${required}" was not measured`);
+	}
+}
 
 // Regressions on anything we are not explicitly trading away.
 for (const r of rows) {

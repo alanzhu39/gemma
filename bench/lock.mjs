@@ -6,8 +6,12 @@
  * fallback renderer they also contend for the same cores. A coarse exclusive
  * lock is the simplest thing that is actually correct.
  *
- * Stale locks (a crashed run) are broken after STALE_MS so a dead agent cannot
- * wedge the team.
+ * Design notes:
+ *  - The lock is only broken when the holder process is gone. A long benchmark
+ *    (a full suite on a software renderer takes hours) holds it legitimately,
+ *    so age alone must never be treated as staleness.
+ *  - Waiting sleeps instead of spinning. A busy-wait burns a core, which slows
+ *    down the run holding the lock and perturbs the very timings we want.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -15,24 +19,37 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOCK = path.join(HERE, ".cache", "bench.lock");
-const STALE_MS = 45 * 60 * 1000;
 
 function pidAlive(pid) {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
 	try {
 		process.kill(pid, 0);
 		return true;
+	} catch (e) {
+		// EPERM means the process exists but belongs to someone else.
+		return e.code === "EPERM";
+	}
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function readHolder() {
+	try {
+		return JSON.parse(fs.readFileSync(LOCK, "utf8"));
 	} catch {
-		return false;
+		// Mid-write, empty, or corrupt.
+		return null;
 	}
 }
 
 /**
- * Acquire the lock. Returns a release function.
+ * Acquire the lock. Returns an async release function.
  *
  * @param {{ wait?: boolean, onWait?: (holder: object) => void }} opts
  */
-export function acquireLock({ wait = true, onWait } = {}) {
+export async function acquireLock({ wait = true, onWait } = {}) {
 	fs.mkdirSync(path.dirname(LOCK), { recursive: true });
+	let announced = false;
 
 	for (;;) {
 		try {
@@ -43,7 +60,7 @@ export function acquireLock({ wait = true, onWait } = {}) {
 				JSON.stringify({ pid: process.pid, startedAt: Date.now(), argv: process.argv.slice(2) }),
 			);
 			fs.closeSync(fd);
-			return () => {
+			return async () => {
 				try {
 					fs.unlinkSync(LOCK);
 				} catch {
@@ -53,23 +70,33 @@ export function acquireLock({ wait = true, onWait } = {}) {
 		} catch (e) {
 			if (e.code !== "EEXIST") throw e;
 
-			let holder = {};
-			try {
-				holder = JSON.parse(fs.readFileSync(LOCK, "utf8"));
-			} catch {
-				// Mid-write or corrupt; treat as stale below.
+			const holder = readHolder();
+
+			// A lock file we cannot parse is either being written right now or
+			// was left behind by a crash. Give it a moment before judging.
+			if (!holder) {
+				await sleep(250);
+				const again = readHolder();
+				if (!again) {
+					// Still unparseable and nobody claims it: safe to clear. There is
+					// a small race here between two waiters; unlinking a file that is
+					// already gone is harmless, and the 'wx' create below re-serialises
+					// whoever wins.
+					try {
+						fs.unlinkSync(LOCK);
+					} catch {
+						// Someone else cleared it.
+					}
+				}
+				continue;
 			}
 
-			const age = Date.now() - (holder.startedAt ?? 0);
-			const dead = holder.pid ? !pidAlive(holder.pid) : true;
-			if (dead || age > STALE_MS) {
-				console.warn(
-					`[bench] breaking stale lock (pid ${holder.pid ?? "?"}, age ${Math.round(age / 60000)}m)`,
-				);
+			if (!pidAlive(holder.pid)) {
+				console.warn(`[bench] clearing lock left by dead process ${holder.pid}`);
 				try {
 					fs.unlinkSync(LOCK);
 				} catch {
-					// Someone else broke it first; loop and retry.
+					// Another waiter got there first.
 				}
 				continue;
 			}
@@ -81,12 +108,11 @@ export function acquireLock({ wait = true, onWait } = {}) {
 				);
 			}
 
-			onWait?.(holder);
-			// Busy-wait with a short sleep. Kept dependency-free on purpose.
-			const until = Date.now() + 5000;
-			while (Date.now() < until) {
-				// no-op
+			if (!announced) {
+				onWait?.(holder);
+				announced = true;
 			}
+			await sleep(1000);
 		}
 	}
 }

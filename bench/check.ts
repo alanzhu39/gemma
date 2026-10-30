@@ -32,6 +32,28 @@ export type Golden = {
 	latentShape: number[];
 };
 
+/**
+ * Reference for the decode path.
+ *
+ * The prefill check above never exercises the code the optimizations touch most:
+ * writing into a populated KV cache, the sliding-window ring buffer wrapping
+ * around its 512 slots, and growing the global cache. This records logits from a
+ * sequence long enough to cross all three.
+ */
+export type DecodeGolden = {
+	precision: "f16" | "f32";
+	/** Context length, chosen to cross the 512-slot sliding window. */
+	contextLen: number;
+	tokens: number[];
+	/** Logits after each of `steps` decode steps. */
+	steps: {
+		position: number;
+		logits: number[];
+		argmax: number;
+	}[];
+	indices: number[];
+};
+
 const TOKENS = [2, 651, 892, 4497, 603, 322, 1128, 571, 407, 4724, 235265];
 
 /** Fixed subset of the vocabulary, so goldens stay small and diffs readable. */
@@ -170,6 +192,147 @@ export async function runCheck(golden: Golden | null, opts: { tolerance?: number
 					!hasSpread && "logits collapsed (all similar)",
 					!argmaxMatch && `argmax ${actual.argmax} != golden ${golden.argmax}`,
 					relErr > tolerance && `relative error ${relErr.toFixed(4)} > ${tolerance}`,
+				]
+					.filter(Boolean)
+					.join("; "),
+	};
+}
+
+/**
+ * Long enough to cross the 512-slot sliding window (so the ring buffer wraps)
+ * and to force the global KV cache to grow past its initial capacity.
+ */
+const DECODE_CONTEXT_LEN = 600;
+const DECODE_STEPS = 4;
+
+/** Deterministic pseudo-random token ids, reproducible across runs. */
+function decodeTokens(n: number): number[] {
+	const out: number[] = [2]; // <bos>
+	let x = 12345;
+	for (let i = 1; i < n; i++) {
+		// Small LCG; only needs to be reproducible, not high quality.
+		x = (x * 1103515245 + 12345) & 0x7fffffff;
+		out.push(100 + (x % 200000));
+	}
+	return out;
+}
+
+async function readLogits(model: Gemma3, latent: np.Array) {
+	const logits = runLinear(
+		{ weight: tree.ref(model).tokenEmbed },
+		latent.ref.slice([-1]).flatten(),
+	);
+	return (await logits.data()) as Float16Array | Float32Array;
+}
+
+/**
+ * Prefill `DECODE_CONTEXT_LEN` tokens, then decode a few steps, recording the
+ * logits after each. Exercises populated-cache reads, the sliding-window wrap,
+ * and cache growth — the regions the decode optimizations actually touch.
+ */
+export async function computeDecodeLogits(
+	precision: "f16" | "f32",
+): Promise<DecodeGolden> {
+	const devices = await init("webgpu");
+	if (!devices.includes("webgpu")) throw new Error("WebGPU required");
+	defaultDevice("webgpu");
+
+	const model = await loadModel(precision);
+	const tokens = decodeTokens(DECODE_CONTEXT_LEN);
+
+	let state = createGemma3State(model);
+	const prefill = runGemma3Step(tree.ref(model), state, np.array(tokens, { dtype: np.uint32 }));
+	await blockUntilReady(prefill.latent);
+	prefill.latent.dispose();
+	state = prefill.state;
+
+	const indices = sampleIndices(model.tokenEmbed.shape[0]);
+	const steps: DecodeGolden["steps"] = [];
+
+	let token = tokens[tokens.length - 1];
+	for (let s = 0; s < DECODE_STEPS; s++) {
+		const out = runGemma3Step(tree.ref(model), state, np.array([token], { dtype: np.uint32 }));
+		await blockUntilReady(out.latent);
+		state = out.state;
+
+		const all = await readLogits(model, out.latent);
+		out.latent.dispose();
+
+		let argmax = 0;
+		for (let i = 1; i < all.length; i++) if (all[i] > all[argmax]) argmax = i;
+
+		steps.push({ position: state.position, logits: indices.map((i) => Number(all[i])), argmax });
+		// Feed the model's own choice back in, so the trajectory is realistic and
+		// any drift compounds instead of being masked by fresh random input.
+		token = argmax;
+	}
+
+	state.kvCaches.forEach((c) => {
+		c.k.dispose();
+		c.v.dispose();
+	});
+
+	return { precision, contextLen: DECODE_CONTEXT_LEN, tokens, steps, indices };
+}
+
+export async function runDecodeCheck(
+	golden: DecodeGolden | null,
+	opts: { tolerance?: number } = {},
+) {
+	const devices = await init("webgpu");
+	if (!devices.includes("webgpu")) throw new Error("WebGPU required");
+	defaultDevice("webgpu");
+	const adapter = await navigator.gpu.requestAdapter();
+	if (!adapter) throw new Error("no adapter");
+	const precision: "f16" | "f32" = hasF16(adapter) ? "f16" : "f32";
+
+	const actual = await computeDecodeLogits(precision);
+	const finite = actual.steps.every((s) => s.logits.every((x) => Number.isFinite(x)));
+	const spread = actual.steps.every((s) => new Set(s.logits.map((x) => x.toFixed(3))).size > 4);
+
+	const base = { precision, actual, finite, spread };
+
+	if (!golden) {
+		return {
+			...base,
+			status: finite && spread ? "no-golden" : "fail",
+			message: `no decode golden for precision ${precision}; run npm run bench:golden`,
+		};
+	}
+	if (golden.precision !== precision) {
+		return {
+			...base,
+			status: "skipped",
+			message: `decode golden is ${golden.precision} but this device runs ${precision}`,
+		};
+	}
+
+	const tolerance = opts.tolerance ?? 0.02;
+	let worstRel = 0;
+	let argmaxMismatch = -1;
+	for (let i = 0; i < actual.steps.length; i++) {
+		const a = actual.steps[i];
+		const g = golden.steps[i];
+		if (!g) continue;
+		worstRel = Math.max(worstRel, relativeError(a.logits, g.logits));
+		if (a.argmax !== g.argmax && argmaxMismatch < 0) argmaxMismatch = i;
+	}
+
+	const ok = finite && spread && argmaxMismatch < 0 && worstRel <= tolerance;
+	return {
+		...base,
+		status: ok ? "pass" : "fail",
+		golden,
+		worstRel,
+		argmaxMismatch,
+		tolerance,
+		message: ok
+			? `decode logits match golden across ${actual.steps.length} steps (max rel err ${worstRel.toExponential(2)})`
+			: [
+					!finite && "non-finite decode logits",
+					!spread && "decode logits collapsed",
+					argmaxMismatch >= 0 && `argmax differs at step ${argmaxMismatch}`,
+					worstRel > tolerance && `relative error ${worstRel.toFixed(4)} > ${tolerance}`,
 				]
 					.filter(Boolean)
 					.join("; "),
