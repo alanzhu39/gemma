@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Gemma 3 benchmark</title>
+	</head>
+	<body>
+		<h1>Gemma 3 benchmark harness</h1>
+		<p id="status">initialising…</p>
+		<script type="module">
+			// The harness is driven by bench/run.mjs through page.evaluate, which
+			// imports /bench/bench.ts directly. This page only needs to exist so the
+			// page has an origin (WebGPU requires a secure context).
+			window.__benchReady = true;
+			document.getElementById("status").textContent = "ready";
+		</script>
+	</body>
+</html>
