@@ -160,6 +160,57 @@ Defined in `bench/compare.mjs` as `TARGET`:
 Change these numbers in one place, and update `bench/baseline.json` when a new
 target epoch starts.
 
+## Getting the GPU to actually work (Linux + NVIDIA)
+
+Getting Chromium to use a real GPU rather than SwiftShader took four separate
+fixes. Each was verified individually; any one missing silently leaves you on the
+CPU fallback, and the harness still runs, so the failure is easy to miss.
+
+1. **Device access.** `/dev/dri/renderD128` ships as `root:render 0660`. If your
+   user is not in `render`, the driver cannot open the device. You do *not* need
+   `usermod` + re-login if you are already in `video`: a udev rule that puts
+   render nodes in the `video` group takes effect immediately and survives
+   reboots.
+
+   ```sh
+   sudo sh -c 'echo "SUBSYSTEM==\"drm\", KERNEL==\"renderD*\", GROUP=\"video\", MODE=\"0660\"" \
+     > /etc/udev/rules.d/99-render-video.rules'
+   sudo udevadm trigger
+   ```
+
+2. **Drivers.** Without these there is no Vulkan driver to talk to at all.
+
+   ```sh
+   sudo apt install -y mesa-vulkan-drivers libvulkan1
+   ```
+
+3. **Chromium flags.** Headless Chromium does not select Vulkan unless told to.
+   With a working driver and a readable device it still picks ANGLE's
+   SwiftShader backend. `bench/chrome.mjs` passes
+   `--enable-features=Vulkan --use-angle=vulkan --use-vulkan=native`. These are
+   safe on a machine with no driver, because Chromium falls back by itself.
+
+4. **NVK opt-in on Pascal and older.** Mesa's NVK refuses to probe those GPUs
+   unless `NVK_I_WANT_A_BROKEN_VULKAN_DRIVER=1` is set, and reports zero devices
+   without it. `chromeEnv()` sets it for the browser.
+
+Verify with `node bench/preflight.mjs`. It prints the renderer string and the
+`shader-f16` feature.
+
+### Known limitation: no `shader-f16` on NVK/Pascal
+
+NVK does not implement `shaderFloat16` on Pascal (confirmed in `vulkaninfo`, not
+only through Chromium), so the FP16 weights cannot run natively there and the
+harness widens them to float32. Consequences:
+
+- Results are genuine GPU results, roughly 50-100x faster than the CPU fallback.
+- But they are **f32, not f16**, so they move twice the bytes and are not
+  identical to the production browser build. Decode is bandwidth-bound, so this
+  is a real bias — expect absolute throughput to read lower than an f16 GPU
+  would deliver.
+- A GPU or driver that supports `shader-f16` (NVIDIA proprietary driver, modern
+  AMD, Apple) avoids this entirely.
+
 ## Hardware notes
 
 The harness runs headless Chromium. On a machine without access to a real GPU,
