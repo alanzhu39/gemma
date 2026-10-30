@@ -70,17 +70,71 @@ npm run bench:golden     # record the reference (do this once, on a known-good t
 npm run bench:check      # compare against the reference; non-zero exit on failure
 ```
 
+Two checks run, and both must pass:
+
+- **prefill** — one pass over a fixed 11-token sequence.
+- **decode** — a 638-token prefill, then 4 decode steps. `638` is deliberate: it
+  pads the KV cache to 640 during prefill so the *first* decode step crosses the
+  boundary and triggers a grow-and-repad, and it is past the 512-slot sliding
+  window so the ring buffer is already wrapping.
+
 The check runs a fixed token sequence, projects the final position to logits,
-and compares a 64-point sample of the vocabulary against the golden file. It is
+and compares a 64-point sample of the vocabulary against the golden. It is
 tolerance-based, because GPU floating point is not bitwise reproducible across
 shader rewrites — different summation orders legitimately change the last bits.
-What must hold: all logits finite, logits not collapsed, argmax unchanged, and
-relative error under the tolerance (default 2%).
+
+### The error metric
+
+Error is normalised by the **scale of the logit vector** (the largest `|logit|`
+in that step), not element-wise:
+
+```
+err = max over sampled entries of |actual - golden| / max|golden|
+```
+
+An element-wise relative error is the wrong metric here. Most of a vocabulary
+sits near zero — one decode step has 12 of its 64 sampled logits under 0.5 and a
+minimum of 0.0024 — so dividing by 0.0024 turns a `1e-5` absolute difference
+into a `0.004` "relative error". That number is produced entirely by the
+denominator, and it can fail a numerically sound change for no reason.
+
+### Calibration
+
+Tolerances are fractions of that scale: **0.001 for decode, 0.005 for prefill**
+(`--tolerance` overrides both). Chosen from measured headroom:
+
+| signal | magnitude (fraction of scale) |
+| --- | --- |
+| RoPE rewrite (exact transform) | **0.0** |
+| attention rewrite (fusion, 7→4 kernels) | **1.3e-7** |
+| **pass/fail threshold** | **1e-3** |
+| a genuine 1% breakage | 1e-2 |
+
+That is ~10,000× above observed noise and 10× below a real break. A looser
+threshold leaves too little margin to be meaningful: at 0.005 a real break sat
+only 2× above the line, which is a coin flip rather than a gate.
+
+Verified against the recorded golden: identical output passes, a `1e-7`
+perturbation passes, `1e-5` passes, a 1% scale error fails, a 0.05 absolute
+shift fails, and corrupting the smallest 25% of logits by 2% fails.
+
+### Argmax
+
+Argmax must match, with one principled exception. When the golden's top two
+tokens differ by less than the error the tolerance already permits
+(`tolerance * |top1|`), a swap is expected from any change in summation order
+and is counted as a tolerated near-tie rather than a failure. At 0.001 all four
+decode steps' argmax comparisons are enforced.
+
+A PASS on the normalised error alone is not the whole evidence. When reporting a
+result, also give the **absolute max-abs-diff** and the **argmax match**, since
+the normalised metric deliberately trades away sensitivity to small absolute
+drift.
 
 Goldens are stored per precision (`bench/goldens/f16.json`,
-`bench/goldens/f32.json`) because the two paths round differently. A run whose
-precision does not match the golden reports `skipped` rather than a false
-failure.
+`bench/goldens/f32.json`) because the two paths round differently, and the
+decode reference is `<precision>-decode.json`. A run whose precision does not
+match the golden reports `skipped` rather than a false failure.
 
 ## Comparing against a baseline
 
