@@ -137,6 +137,7 @@ export async function computeLogits(precision: "f16" | "f32"): Promise<Golden> {
 		c.k.dispose();
 		c.v.dispose();
 	});
+	state.positionTensor.dispose();
 
 	return { precision, tokens: TOKENS, logits: vals, indices, argmax, latentShape };
 }
@@ -337,6 +338,7 @@ export async function computeDecodeLogits(
 		c.k.dispose();
 		c.v.dispose();
 	});
+	state.positionTensor.dispose();
 
 	return { precision, contextLen: DECODE_CONTEXT_LEN, tokens, steps, indices };
 }

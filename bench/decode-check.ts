@@ -54,6 +54,7 @@ function disposeState(state: Gemma3State) {
 		c.k.dispose();
 		c.v.dispose();
 	}
+	state.positionTensor.dispose();
 }
 
 export async function runDecodeCheck(context: number[], decode: number[]) {

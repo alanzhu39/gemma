@@ -130,6 +130,9 @@ function disposeState(state: Gemma3State) {
 		c.k.dispose();
 		c.v.dispose();
 	}
+	// The caches are freed by hand above, so the position tensor is the one
+	// array in the state that nothing else walks to.
+	state.positionTensor.dispose();
 }
 
 /**
