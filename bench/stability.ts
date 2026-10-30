@@ -27,6 +27,8 @@ export type StepRecord = {
 	mapAsync: number;
 	/** Latent norm at this position, so a divergence shows up as a trend. */
 	norm: number;
+	/** Global KV capacity in rows during this step, to identify repad steps. */
+	globalCapacity: number;
 };
 
 function counts(): Counts {
@@ -94,6 +96,7 @@ export async function runStability(context: number[], decode: number[]) {
 		if (Number.isFinite(l.argmax)) argmaxCount++;
 		out.latent.dispose();
 		steps.push({
+			globalCapacity: state.kvCaches[5].k.shape[0],
 			dispatch: d.dispatch,
 			submit: d.submit,
 			createBuffer: d.createBuffer,
