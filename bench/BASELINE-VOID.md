@@ -4,7 +4,24 @@
 That adapter is not usable for performance work, so the numbers in it do not
 describe this engine.
 
-## Why
+## Why: nouveau cannot reclock Pascal
+
+Nouveau's own power-management support matrix lists, for Pascal (GP106):
+
+| feature | status |
+| --- | --- |
+| Engine reclocking | **TODO** |
+| Memory reclocking | **TODO** |
+| Automatic reclocking | **TODO** |
+| Voltage adjusting | **TODO** |
+
+Without PMU firmware the card never leaves its boot clocks — around **139 MHz**
+core against a **1709 MHz** boost clock, roughly 8% of what the hardware can do.
+Memory also never reclocks. This is a documented, long-standing nouveau
+limitation on Pascal, not a fault in this machine.
+
+That explains why everything measured low by a similar factor, rather than one
+subsystem being slow.
 
 Measured on the same adapter, same session:
 
