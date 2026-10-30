@@ -62,17 +62,24 @@ const tolerance = tolIdx >= 0 ? Number(argv[tolIdx + 1]) : undefined;
 /**
  * Default tolerances, applied per check when --tolerance is not given.
  *
- * Decode is tighter than prefill because its argmax guard depends on it. With a
- * single 2% tolerance, two of the four recorded decode steps had a permitted
- * absolute error (0.52 and 0.23 at top1 -26 and +11.4) wider than the real
- * top-2 margin (0.27 and 0.10), so their argmax check was simply skipped. At
- * 0.5% those allowances fall to 0.13 and 0.04, below all four margins, so the
- * argmax check actually fires.
+ * These are fractions of the logit scale (max |logit|), not element-wise
+ * relative errors: an element-wise metric is dominated by whichever vocabulary
+ * entry happens to sit nearest zero, which is noise rather than signal.
  *
- * Both values remain far looser than observed drift: self-consistency is exact,
- * and the attention restructure measured 7e-8 to 2.4e-7.
+ * Decode is tighter than prefill because its argmax guard depends on it. At a
+ * single 2% tolerance, two of four decode steps permitted an absolute error
+ * wider than their real top-2 margin, so their argmax check was skipped
+ * entirely.
+ *
+ * 0.1% is chosen from measured headroom, not convenience:
+ *   - observed noise: 1.3e-7 (attention rewrite), 0.0 (RoPE rewrite)
+ *   - real breakage:  ~1% of scale
+ *   - 0.001 sits ~10,000x above the noise and 10x below a real break, which
+ *     keeps the threshold well conditioned in both directions.
+ * An earlier 0.005 left only 2x headroom against a genuine bug, which is too
+ * thin to trust.
  */
-const DEFAULT_TOLERANCE = { prefill: 0.02, decode: 0.005 };
+const DEFAULT_TOLERANCE = { prefill: 0.005, decode: 0.001 };
 
 if (!fs.existsSync(WEIGHTS)) {
 	console.error(`Missing weights. Run: npm run bench:fetch`);
