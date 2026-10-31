@@ -102,11 +102,29 @@ function unrolled(reg: number, template: (i: number, j: number) => string): stri
 	return out;
 }
 
-function shaderSource(M: number, N: number, K: number, layout: Layout, side: TileSide): string {
+/** Storage dtype of the two input operands. Accumulation is always f32. */
+export type MatmulDtype = "f32" | "f16";
+
+function shaderSource(
+	M: number,
+	N: number,
+	K: number,
+	layout: Layout,
+	side: TileSide,
+	dtype: MatmulDtype,
+): string {
+	// Inputs are read as their storage type and widened on load; `acc`, the
+	// shared tiles and the output are always f32. That is the same contract
+	// jax-js uses for f16 weights (read f16, accumulate f32), so this path
+	// produces the same numbers whether the weights are stored narrow or wide.
+	const enable = dtype === "f16" ? "enable f16;\n" : "";
+	const inTy = dtype === "f16" ? "f16" : "f32";
 	const { TN, DIM } = TILES[side];
 	const REG = TN / DIM;
 	const accumulators = unrolled(REG, (i, j) => `  var acc${i}${j}: f32 = 0.0;\n`);
 
+	// `As`/`Ws` are f32 shared arrays, so assignment from an f16 global load
+	// performs the widening. Nothing accumulates in f16.
 	const loadA = unrolled(REG, (i) => `    av${i} = As[(ar + ${i}u) * ${TK + 1}u + kk];\n`);
 	const loadB = unrolled(REG, (i) => `    bv${i} = Ws[kk * ${TN + 1}u + (ac + ${i}u)];\n`);
 
@@ -130,7 +148,7 @@ function shaderSource(M: number, N: number, K: number, layout: Layout, side: Til
 			: `w[(k0 + rk) * N + (n0 + cn)]`;
 
 	return `
-const TN: u32 = ${TN}u;
+${enable}const TN: u32 = ${TN}u;
 const TK: u32 = ${TK}u;
 const DIM: u32 = ${DIM}u;
 const REG: u32 = ${REG}u;
@@ -138,8 +156,8 @@ const M: u32 = ${M}u;
 const N: u32 = ${N}u;
 const K: u32 = ${K}u;
 
-@group(0) @binding(0) var<storage, read> a: array<f32>;        // [M,K]
-@group(0) @binding(1) var<storage, read> w: array<f32>;        // [N,K] or [K,N]
+@group(0) @binding(0) var<storage, read> a: array<${inTy}>;        // [M,K]
+@group(0) @binding(1) var<storage, read> w: array<${inTy}>;        // [N,K] or [K,N]
 @group(0) @binding(2) var<storage, read_write> c: array<f32>;  // [M,N]
 
 // +1 element of padding on the inner axis. Without it a column-wise read of a
@@ -204,17 +222,18 @@ function compile(
 	K: number,
 	layout: Layout,
 	side: TileSide,
+	dtype: MatmulDtype,
 ): Compiled {
 	let byKey = compiled.get(device);
 	if (!byKey) {
 		byKey = new Map();
 		compiled.set(device, byKey);
 	}
-	const key = `${M}x${N}x${K}x${layout}x${side}`;
+	const key = `${M}x${N}x${K}x${layout}x${side}x${dtype}`;
 	const hit = byKey.get(key);
 	if (hit) return hit;
 
-	const module = device.createShaderModule({ code: shaderSource(M, N, K, layout, side) });
+	const module = device.createShaderModule({ code: shaderSource(M, N, K, layout, side, dtype) });
 	const pipeline = device.createComputePipeline({
 		layout: "auto",
 		compute: { module, entryPoint: "main" },
@@ -252,15 +271,32 @@ export function matmulDecline(weight: np.Array, x: np.Array, layout: Layout): st
 	const kk = layout === "out,in" ? cols : rows;
 	if (kk !== k) return `reduction axis ${kk} does not match activation ${k}`;
 	if (n <= 0 || m <= 0) return "empty output";
-	if (weight.dtype !== DType.Float32) {
-		// Deliberate: this kernel accumulates in f32 and stages f32 tiles. The
-		// published weights are f16 on hardware that advertises `shader-f16`, and
-		// an f16 staging path has not been measured or gated anywhere yet, so it
-		// stays on the stock path rather than shipping an untested variant.
-		return `weight dtype ${weight.dtype} (only f32 is gated)`;
+	const width = dtypeOf(weight);
+	if (!width) return `weight dtype ${weight.dtype} (f32 and f16 only)`;
+	if (dtypeOf(x) !== width) return `mixed dtypes: weight ${weight.dtype}, activation ${x.dtype}`;
+
+	const device = getWebGPUDeviceOrNull();
+	if (!device) return "not on the WebGPU backend";
+	// f16 *storage* needs the shader-f16 feature, and the shader also has to
+	// declare `enable f16;`. Without the feature the stock path handles it.
+	if (width === "f16" && !device.features.has("shader-f16" as GPUFeatureName)) {
+		return "f16 weights but the device has no shader-f16 feature";
 	}
-	if (x.dtype !== DType.Float32) return `activation dtype ${x.dtype}`;
-	if (!getWebGPUDeviceOrNull()) return "not on the WebGPU backend";
+	// f16 is OPT-IN and off by default. The dev machine has no shader-f16, so
+	// this path has never been executed or gated anywhere: the shader compiles
+	// here only as far as "extension f16 is not allowed in this environment".
+	// Enable with `globalThis.__matmulAllowF16 = true` on a device that has the
+	// feature, and run `npm run bench:check` there before trusting it.
+	if (width === "f16" && !(globalThis as { __matmulAllowF16?: boolean }).__matmulAllowF16) {
+		return "f16 path is unverified on this hardware; set __matmulAllowF16 to enable";
+	}
+	return null;
+}
+
+/** Storage width of an array, or null if this kernel cannot read it. */
+function dtypeOf(a: np.Array): MatmulDtype | null {
+	if (a.dtype === DType.Float32) return "f32";
+	if (a.dtype === DType.Float16) return "f16";
 	return null;
 }
 
@@ -328,7 +364,8 @@ export function matmul(
 	const K = layout === "out,in" ? cols : rows;
 	const M = x.shape[0];
 	const side = tileFor((globalThis as { __matmulTile?: number }).__matmulTile);
-	const g = compile(device, M, N, K, layout, side);
+	const width = dtypeOf(weight) as MatmulDtype;
+	const g = compile(device, M, N, K, layout, side, width);
 
 	const wantStamps = opts.timestamps ?? timestampsOn;
 	const aBuf = x.ref.gpuBufferSync();
