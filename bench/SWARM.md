@@ -477,3 +477,18 @@ not wired in. Prefill at 1.03x is the honest number.
 2. **Wall clock on this box is not stable.** Identical code read 15.3, 17.5 and
    19.9 tok/s in one session; a single model step spans 44-90 ms between runs
    depending on other tenants. Quote GPU-side numbers or a range.
+
+### Memory ownership, verified rather than assumed
+
+An earlier note flagged `positionTensor` as a leak because nothing calls
+`positionTensor.dispose()` explicitly. It is not a leak: `tree.dispose(state)`
+calls `flatten(tree)` and disposes every array leaf, so the position tensor and
+every KV-cache entry are freed with the state (`index.js:300-314`). The app's
+`clearChat` disposes `modelState` and drops the cache correctly, and the model
+itself is loaded once and intentionally outlives it.
+
+The one real memory decision to be aware of: the contiguous projection copy
+duplicates the tied embedding, which costs **+320 MiB on f16 / +640 MiB on f32**
+against a 511 MiB weight set. It is unavoidable — a gather indexes the leading
+axis and a matvec contracts the trailing one, so one layout cannot serve both.
+Fine on a desktop GPU, worth knowing on a small integrated one.
