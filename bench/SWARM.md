@@ -467,6 +467,27 @@ The tiled path is gated on prefill and not collecting attention weights, so it
 runs 18 times during a prefill and zero times during decode. `runDecoderLayer` is
 untouched, which is why decode could not regress — verified, not assumed.
 
+### The one gap between the benchmark and the product
+
+All numbers above are **f32**, because this card has no `shader-f16`. Two
+different situations follow:
+
+| fix | applies to the shipped f16 build? |
+| --- | --- |
+| Decode: contiguous embedding copy | **yes** — it is a layout change, dtype-independent |
+| Prefill: tiled matmul | **only with the f16 path enabled** (see below) |
+
+The tiled kernel was extended to read f16 weights and widen on load, accumulating
+in f32 — the same contract jax-js uses. But it is **gated off by default**
+(`globalThis.__matmulAllowF16`) because the f16 shader cannot compile on this
+machine at all, so it has never executed or been gated anywhere. Enabling it
+unverified would ship an untested kernel; leaving it unreachable means the app
+silently never gets the win. The flag makes it a deliberate decision.
+
+**To validate on real f16 hardware:** set `__matmulAllowF16 = true`, then run
+`npm run bench:check`. The gate compares against per-device goldens, so a wrong
+f16 kernel fails there rather than changing logits silently.
+
 ### What was tried and rejected, with numbers
 
 | idea | measured | verdict |
