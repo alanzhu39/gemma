@@ -2,10 +2,9 @@ import {
 	createGemma3State,
 	MAX_CONTEXT_LEN,
 	runGemma3Step,
-	runLinear,
+	runLogitsProjection,
 	type Gemma3,
 	type Gemma3State,
-	type Linear,
 } from "./model";
 import { PreTrainedTokenizer } from "@huggingface/transformers";
 import { nn, numpy as np, tree } from "@jax-js/jax";
@@ -91,7 +90,7 @@ export async function* streamGenerate(
 	let nextInput: np.Array = tokensAr;
 	for (let i = 0; i < maxTokens; i++) {
 		const { latent, state: nextState } = runGemma3Step(tree.ref(model), state, nextInput);
-		const logits = runLinear({ weight: model.tokenEmbed.ref }, latent.slice([-1]).flatten());
+		const logits = runLogitsProjection(model, latent.slice([-1]).flatten());
 
 		const tokenId = await sampleLogits(logits.ref, temperature, topK, topP);
 
@@ -130,10 +129,7 @@ export async function generateOnce(
 		tokensAr.ref,
 	);
 
-	const outProj: Linear = {
-		weight: model.tokenEmbed.ref,
-	};
-	const logits = runLinear(outProj, latent.slice([-1]).flatten());
+	const logits = runLogitsProjection(model, latent.slice([-1]).flatten());
 	const predictedToken = np.argmax(nn.softmax(logits));
 
 	// Must have collected weights
@@ -168,7 +164,7 @@ export function runInference(
 		const { latent, state: nextState } = runGemma3Step(tree.ref(model), state, nextInput);
 
 		// Project back to token space
-		const logits = runLinear({ weight: model.tokenEmbed.ref }, latent.slice([-1]).flatten());
+		const logits = runLogitsProjection(model, latent.slice([-1]).flatten());
 
 		// Decode tokens
 		const predictedToken = np.argmax(nn.softmax(logits));

@@ -13,7 +13,12 @@
  */
 import { blockUntilReady, defaultDevice, init, numpy as np, tree } from "@jax-js/jax";
 import { safetensors } from "@jax-js/loaders";
-import { createGemma3State, fromSafetensors, runGemma3Step, runLinear } from "../src/lib/gemma3/model";
+import {
+	createGemma3State,
+	fromSafetensors,
+	runGemma3Step,
+	runLogitsProjection,
+} from "../src/lib/gemma3/model";
 import type { Gemma3, Gemma3State } from "../src/lib/gemma3/model";
 import { loadModelF32 } from "./f32-model";
 
@@ -42,7 +47,7 @@ function sampleIndices(vocab: number): number[] {
 }
 
 async function lastLogits(model: Gemma3, latent: np.Array) {
-	const logits = runLinear({ weight: tree.ref(model).tokenEmbed }, latent.slice([-1]).flatten());
+	const logits = runLogitsProjection(model, latent.slice([-1]).flatten());
 	const all = (await logits.data()) as Float16Array | Float32Array;
 	let argmax = 0;
 	for (let i = 1; i < all.length; i++) if (all[i] > all[argmax]) argmax = i;

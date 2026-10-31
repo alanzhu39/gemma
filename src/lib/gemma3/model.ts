@@ -1,5 +1,5 @@
 import { safetensors, WeightMapper } from "@jax-js/loaders";
-import { DType, jit, nn, numpy as np } from "@jax-js/jax";
+import { DType, jit, nn, numpy as np, tree } from "@jax-js/jax";
 
 // Model weight and layer interfaces
 
@@ -15,6 +15,63 @@ export const runLinear = jit(function runLinear({ weight, bias }: Linear, x: np.
 	if (bias) x = x.add(bias);
 	return x;
 });
+
+/**
+ * The logits projection, i.e. the vocabulary matvec.
+ *
+ * This is the largest GPU region in a decode step: it streams the whole tied
+ * embedding (640 MiB at V=262144) to emit one vector of numbers per token, so it
+ * is a pure read-bandwidth problem. jax-js's lowering assigns one thread per
+ * output row, which leaves each warp touching 32 rows 2560 B apart and using 4 B
+ * of every 128 B cache line. Reading a contiguous [dim, vocab] copy instead
+ * reaches 126 GB/s with no special kernel; see `tokenEmbedT`.
+ *
+ * Measured in-model on a GTX 1060 (f32 weights, readback forced):
+ *   strided view     68.5 ms     9.8 GB/s
+ *   contiguous copy   5.6 ms   126.6 GB/s
+ *
+ * A warp-per-row WGSL kernel was built and measured too; it reached 5.2 ms, a
+ * 0.4 ms (0.3%) gain over the copy for 263 lines of kernel, a library patch to
+ * request `subgroups`, and two code paths to maintain forever. It was dropped,
+ * and the copy kept. `bench/VOCAB-PROJECTION.md` records the measurements.
+ */
+const runLogitsProjectionJit = jit(function runLogitsProjectionInner(
+	w: np.Array,
+	v: np.Array,
+): np.Array {
+	return np.dot(v, w);
+});
+
+/**
+ * Set once, when the kernel first declines a call, so the reason is visible in
+ * the console exactly once instead of on every token. A silent fallback would
+ * look like a working optimization while quietly running the slow path.
+ */
+
+/**
+ * The pre-kernel projection, kept as its own exported function so it stays
+ * measurable. An optimization that cannot be turned off cannot be A/B'd, and an
+ * un-A/B'd optimization on a box this contended is a guess.
+ *
+ * `weight` selects the arm: `strided` reads the tied embedding through
+ * `tokenEmbed.transpose()` (what `runLinear` did before), `transposed` reads the
+ * contiguous copy when the loader made one.
+ */
+export function runLogitsStockPath(
+	model: Gemma3,
+	x: np.Array,
+	weight: "strided" | "transposed" = "transposed",
+): np.Array {
+	const t = model.tokenEmbedT;
+	if (weight === "transposed" && t) {
+		return runLogitsProjectionJit(tree.ref(t), x);
+	}
+	return runLinear({ weight: tree.ref(model).tokenEmbed }, x);
+}
+
+export function runLogitsProjection(model: Gemma3, x: np.Array): np.Array {
+	return runLogitsStockPath(model, x);
+}
 
 export type RMSNorm = {
 	gamma: np.Array;
@@ -88,6 +145,22 @@ export function createGemma3State(model: Gemma3, collectWeights = false): Gemma3
 
 export type Gemma3 = {
 	tokenEmbed: np.Array;
+	/**
+	 * `tokenEmbed` transposed as a real, contiguous buffer: [640, 262144].
+	 *
+	 * The tied embedding serves two purposes. As an input gather it wants
+	 * [vocab, dim] row-major, which is how the weights arrive. As the output
+	 * projection it wants [dim, vocab], and `np.dot(x, tokenEmbed.transpose())`
+	 * leaves that as a *strided view*: the kernel then reads with a 2560-byte
+	 * stride, so each lane touches a different page.
+	 *
+	 * Measured on a GTX 1060, same bytes either way:
+	 *   strided view     35.96 ms   18.7 GB/s
+	 *   contiguous copy   9.44 ms   71.1 GB/s     (3.8x)
+	 *
+	 * The copy costs ~336 ms once at load and pays for itself after ~5 tokens.
+	 */
+	tokenEmbedT?: np.Array;
 	layers: Gemma3DecoderLayer[];
 	norm: RMSNorm;
 };
@@ -497,5 +570,10 @@ export function fromSafetensors(file: safetensors.File): Gemma3 {
 			throw new Error(`Unexpected dtype ${value.dtype} for weight ${key}`);
 		}
 	}
-	return safetensors.toNested(hydrated).model;
+	const model = safetensors.toNested(hydrated).model as Gemma3;
+	// Build the contiguous transposed copy once. Reading the embedding through a
+	// strided view costs 3.8x on the per-token projection; this copy is ~336 ms
+	// at load and pays for itself after about five tokens.
+	model.tokenEmbedT = model.tokenEmbed.ref.transpose().mul(1) as np.Array;
+	return model;
 }

@@ -15,7 +15,12 @@
  */
 import { blockUntilReady, defaultDevice, init, numpy as np, tree } from "@jax-js/jax";
 import { safetensors } from "@jax-js/loaders";
-import { fromSafetensors, runGemma3Step, runLinear, createGemma3State } from "../src/lib/gemma3/model";
+import {
+	fromSafetensors,
+	runGemma3Step,
+	runLogitsProjection,
+	createGemma3State,
+} from "../src/lib/gemma3/model";
 import type { Gemma3 } from "../src/lib/gemma3/model";
 import { loadModelF32 } from "./f32-model";
 
@@ -123,10 +128,7 @@ export async function computeLogits(precision: "f16" | "f32"): Promise<Golden> {
 	const latentShape = latent.shape.slice();
 
 	// Project only the final position: that is what feeds sampling.
-	const logits = runLinear(
-		{ weight: tree.ref(model).tokenEmbed },
-		latent.ref.slice([-1]).flatten(),
-	);
+	const logits = runLogitsProjection(model, latent.ref.slice([-1]).flatten());
 	const all = (await logits.data()) as Float16Array | Float32Array;
 	const vocab = all.length;
 	const indices = sampleIndices(vocab);
@@ -267,10 +269,7 @@ function decodeTokens(n: number): number[] {
 }
 
 async function readLogits(model: Gemma3, latent: np.Array) {
-	const logits = runLinear(
-		{ weight: tree.ref(model).tokenEmbed },
-		latent.ref.slice([-1]).flatten(),
-	);
+	const logits = runLogitsProjection(model, latent.ref.slice([-1]).flatten());
 	return (await logits.data()) as Float16Array | Float32Array;
 }
 
