@@ -50,10 +50,37 @@
  */
 import { DType, getWebGPUDevice, numpy as np } from "@jax-js/jax";
 
-const TN = 128; // output tile side
 const TK = 16; // reduction steps staged at a time
-const DIM = 16; // threads per tile side
-const REG = TN / DIM; // 8 outputs per thread per side
+
+/**
+ * Tile configurations, keyed by output-tile side.
+ *
+ * Both hold a square register block, but differ in how many blocks the card can
+ * keep in flight. Measured; see probe-tile-pick.ts.
+ */
+const TILES = {
+	128: { TN: 128, DIM: 16 }, // 8x8 accumulators
+	64: { TN: 64, DIM: 16 }, // 4x4 accumulators
+} as const;
+type TileSide = keyof typeof TILES;
+
+/**
+ * The default tile side, and why it is 64 rather than the textbook 128.
+ *
+ * Measured on every projection shape at every S the suite benchmarks
+ * (probe-tile-pick.ts): the 64 tile is faster in all 28 combinations, by 1.11x
+ * to 1.77x, reaching 1272 GFLOPS against 929 for the 128 tile. The 128 tile
+ * carries 64 f32 accumulators per thread and 256 threads per workgroup, which on
+ * a 10-SM card leaves too few blocks in flight to hide the shared-memory
+ * staging; the 4x4 block of the 64 tile keeps more blocks resident.
+ *
+ * `__matmulTile` is a probe hook, not a feature: it exists so the sweep above can
+ * be re-run without editing the kernel.
+ */
+function tileFor(override?: number): TileSide {
+	if (override === 64 || override === 128) return override;
+	return 64;
+}
 
 /**
  * Which way `weight` is stored.
@@ -69,21 +96,24 @@ const REG = TN / DIM; // 8 outputs per thread per side
  */
 type Layout = "out,in" | "in,out";
 
-function unrolled(template: (i: number, j: number) => string): string {
+function unrolled(reg: number, template: (i: number, j: number) => string): string {
 	let out = "";
-	for (let i = 0; i < REG; i++) for (let j = 0; j < REG; j++) out += template(i, j);
+	for (let i = 0; i < reg; i++) for (let j = 0; j < reg; j++) out += template(i, j);
 	return out;
 }
 
-function shaderSource(M: number, N: number, K: number, layout: Layout): string {
-	const accumulators = unrolled((i, j) => `  var acc${i}${j}: f32 = 0.0;\n`);
+function shaderSource(M: number, N: number, K: number, layout: Layout, side: TileSide): string {
+	const { TN, DIM } = TILES[side];
+	const REG = TN / DIM;
+	const accumulators = unrolled(REG, (i, j) => `  var acc${i}${j}: f32 = 0.0;\n`);
 
-	const loadA = unrolled((i) => `    av${i} = As[(ar + ${i}u) * ${TK + 1}u + kk];\n`);
-	const loadB = unrolled((i) => `    bv${i} = Ws[kk * ${TN + 1}u + (ac + ${i}u)];\n`);
+	const loadA = unrolled(REG, (i) => `    av${i} = As[(ar + ${i}u) * ${TK + 1}u + kk];\n`);
+	const loadB = unrolled(REG, (i) => `    bv${i} = Ws[kk * ${TN + 1}u + (ac + ${i}u)];\n`);
 
-	const fma = unrolled((i, j) => `      acc${i}${j} = acc${i}${j} + av${i} * bv${j};\n`);
+	const fma = unrolled(REG, (i, j) => `      acc${i}${j} = acc${i}${j} + av${i} * bv${j};\n`);
 
 	const store = unrolled(
+		REG,
 		(i, j) =>
 			`  { let m: u32 = m0 + ar + ${i}u; let n: u32 = n0 + ac + ${j}u;\n` +
 			`    if ((m < M) && (n < N)) { c[m * N + n] = acc${i}${j}; } }\n`,
@@ -167,17 +197,24 @@ type Compiled = {
 };
 const compiled = new WeakMap<GPUDevice, Map<string, Compiled>>();
 
-function compile(device: GPUDevice, M: number, N: number, K: number, layout: Layout): Compiled {
+function compile(
+	device: GPUDevice,
+	M: number,
+	N: number,
+	K: number,
+	layout: Layout,
+	side: TileSide,
+): Compiled {
 	let byKey = compiled.get(device);
 	if (!byKey) {
 		byKey = new Map();
 		compiled.set(device, byKey);
 	}
-	const key = `${M}x${N}x${K}x${layout}`;
+	const key = `${M}x${N}x${K}x${layout}x${side}`;
 	const hit = byKey.get(key);
 	if (hit) return hit;
 
-	const module = device.createShaderModule({ code: shaderSource(M, N, K, layout) });
+	const module = device.createShaderModule({ code: shaderSource(M, N, K, layout, side) });
 	const pipeline = device.createComputePipeline({
 		layout: "auto",
 		compute: { module, entryPoint: "main" },
@@ -189,8 +226,8 @@ function compile(device: GPUDevice, M: number, N: number, K: number, layout: Lay
 	const entry: Compiled = {
 		pipeline,
 		layout: pipeline.getBindGroupLayout(0),
-		gridX: Math.ceil(N / TN),
-		gridY: Math.ceil(M / TN),
+		gridX: Math.ceil(N / TILES[side].TN),
+		gridY: Math.ceil(M / TILES[side].TN),
 	};
 	void device.popErrorScope().then((e) => {
 		if (e) console.error(`[matmul] shader compile failed: ${e.message}`);
@@ -290,7 +327,8 @@ export function matmul(
 	const N = layout === "out,in" ? rows : cols;
 	const K = layout === "out,in" ? cols : rows;
 	const M = x.shape[0];
-	const g = compile(device, M, N, K, layout);
+	const side = tileFor((globalThis as { __matmulTile?: number }).__matmulTile);
+	const g = compile(device, M, N, K, layout, side);
 
 	const wantStamps = opts.timestamps ?? timestampsOn;
 	const aBuf = x.ref.gpuBufferSync();
