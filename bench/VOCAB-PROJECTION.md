@@ -71,3 +71,21 @@ This box runs at 95-99% external CPU load. One variant's per-round times ranged
 whole-step measurement. The isolated table uses the **minimum** over reps
 (interference only adds time, so the minimum is the least disturbed run); the
 whole-step claim rests on two independent whole-suite runs agreeing.
+
+## The memory cost of the fix
+
+The contiguous copy is a second copy of the tied embedding. That is deliberate and
+unavoidable:
+
+- the **input gather** (`tokenEmbed.slice(tokens)`) needs `[vocab, dim]`, because
+  a gather indexes the leading axis;
+- the **output projection** needs `[dim, vocab]` contiguous, because a matvec
+  contracts the trailing axis.
+
+One layout cannot serve both. Alternatives considered: keeping only the
+transposed copy and gathering with a per-token kernel (more code, slower load), or
+gathering on the host from the f16 source (a PCIe round trip per token).
+
+Cost: **+320 MiB on the f16 path, +640 MiB on the f32 fallback**, against a
+511 MiB weight set. Fine on a 6 GiB card; worth knowing on a small integrated GPU.
+Load time cost: ~336 ms once, which pays back after about five tokens.
