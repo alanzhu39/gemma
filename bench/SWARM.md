@@ -414,3 +414,66 @@ A bare `requestDevice()` on this card yields **256 MB** and **16 KiB** workgroup
 storage against an adapter advertising **4.29 GB** and **48 KiB**. Any working set
 above 256 MB then silently does nothing. Kernels must pass raised
 `requiredLimits`. This generated thousands-of-GB/s nonsense for a day.
+
+## Outcome
+
+Decode target met; prefill target not met. Measured on a GTX 1060 through the
+NVIDIA proprietary driver, f32 weights (Pascal has no `shader-f16`).
+
+| workload | baseline | final | multiple | goal | |
+| --- | --- | --- | --- | --- | --- |
+| decode-ctx1024 | 6.74 tok/s | 19.85 | **2.95x** | 2.0x | met |
+| decode-ctx128 | 6.74 | 20.07 | **2.98x** | — | |
+| batch-4 | 8.35 | 21.82 | 2.61x | — | |
+| prefill-1024 | 990.23 | 1019.92 | 1.03x | 1.5x | **not met** |
+| prefill-512 | 1136.51 | 1187.94 | 1.05x | — | |
+
+### What produced the decode win
+
+One change: the vocabulary projection read the tied embedding through a strided
+view. `runLinear` computes `np.dot(x, weight.transpose())`, and `.transpose()` is
+a *view*, so successive elements of the reduction axis sat 2560 bytes apart and
+each 128-byte cache line delivered 4 useful bytes.
+
+| | ms | GB/s |
+| --- | --- | --- |
+| strided view (before) | 68.5 | 9.8 |
+| contiguous `[dim, vocab]` copy (after) | 5.6 | 126.6 |
+
+The copy is made once at load (`tokenEmbedT`), costs ~336 ms, and pays for itself
+after about five tokens. That single kernel was 56% of a decode step.
+
+A warp-per-row WGSL kernel was built to the same end and measured 5.2 ms — it
+**tied** the copy. It was dropped: 0.3% of a step is not worth 263 lines of WGSL,
+a vendored library patch, a `subgroups` device-feature dependency, and two code
+paths maintained forever. Dropping it also restored `node_modules/@jax-js/jax` to
+the published 0.1.11 tarball.
+
+### Why prefill did not improve
+
+Prefill is a different regime. It does ~469 dispatches once for 1024 tokens, so
+per-token launch cost is negligible (~1 ms/token); it is bound by the `[S, ...]`
+tensors, not by the projection access pattern. A tiled shared-memory matmul was
+prototyped for it and did not produce a verified win on this hardware, so it was
+not wired in. Prefill at 1.03x is the honest number.
+
+### What was tried and rejected, with numbers
+
+| idea | measured | verdict |
+| --- | --- | --- |
+| Submit batching | ~2.8 ms alone; ~11-14% only if buffers are also lifetime-managed | not shipped: silent-zero hazard, small alone |
+| Buffer pool | allocation is 0.6-0.95 ms/step (~1%); pooling changed nothing | rejected |
+| Norm fusion | 218 dispatches but only 5.1 ms | not worth it |
+| Warp-per-row GEMV | 5.2 ms vs 5.6 ms copy | dropped, ties the copy |
+| Logits/`sum()` reduction | 0.3 GB/s — a full-axis reduction is pathological | avoided |
+
+### The two traps that cost the most time
+
+1. **`np.ones([...])` is a compile-time literal.** A kernel consuming it folds the
+   input away and never reads the weight, so measurements came out 2.8x too fast
+   (24.1 ms with a literal vs 67.9 ms with a real buffer). This produced the entire
+   disagreement between two probes measuring the same operation and hid ~43 ms of
+   projection from a trace. Use `np.array([...])`.
+2. **Wall clock on this box is not stable.** Identical code read 15.3, 17.5 and
+   19.9 tok/s in one session; a single model step spans 44-90 ms between runs
+   depending on other tenants. Quote GPU-side numbers or a range.
