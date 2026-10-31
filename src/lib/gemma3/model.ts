@@ -1,6 +1,5 @@
 import { safetensors, WeightMapper } from "@jax-js/loaders";
 import { DType, jit, nn, numpy as np, tree } from "@jax-js/jax";
-import { projectVocab, projectVocabDecline } from "./vocab-projection";
 
 // Model weight and layer interfaces
 
@@ -24,17 +23,17 @@ export const runLinear = jit(function runLinear({ weight, bias }: Linear, x: np.
  * embedding (640 MiB at V=262144) to emit one vector of numbers per token, so it
  * is a pure read-bandwidth problem. jax-js's lowering assigns one thread per
  * output row, which leaves each warp touching 32 rows 2560 B apart and using 4 B
- * of every 128 B cache line. `projectVocab` runs a warp-per-row kernel instead;
- * see vocab-projection.ts.
+ * of every 128 B cache line. Reading a contiguous [dim, vocab] copy instead
+ * reaches 126 GB/s with no special kernel; see `tokenEmbedT`.
  *
  * Measured in-model on a GTX 1060 (f32 weights, readback forced):
- *   stock np.dot   72.3 ms    9.3 GB/s
- *   warp-per-row    9.8 ms   68.5 GB/s
+ *   strided view     68.5 ms     9.8 GB/s
+ *   contiguous copy   5.6 ms   126.6 GB/s
  *
- * The kernel is used when it can handle the call and the stock path otherwise.
- * The fallback is a real path, not a stub: the CPU/WASM backends, a device
- * without `subgroups`, and any dtype or rank this kernel does not cover all land
- * on `runLinear`, which is correct by construction.
+ * A warp-per-row WGSL kernel was built and measured too; it reached 5.2 ms, a
+ * 0.4 ms (0.3%) gain over the copy for 263 lines of kernel, a library patch to
+ * request `subgroups`, and two code paths to maintain forever. It was dropped,
+ * and the copy kept. `bench/VOCAB-PROJECTION.md` records the measurements.
  */
 const runLogitsProjectionJit = jit(function runLogitsProjectionInner(
 	w: np.Array,
@@ -48,7 +47,6 @@ const runLogitsProjectionJit = jit(function runLogitsProjectionInner(
  * the console exactly once instead of on every token. A silent fallback would
  * look like a working optimization while quietly running the slow path.
  */
-let declineReported = false;
 
 /**
  * The pre-kernel projection, kept as its own exported function so it stays
@@ -72,22 +70,6 @@ export function runLogitsStockPath(
 }
 
 export function runLogitsProjection(model: Gemma3, x: np.Array): np.Array {
-	// The kernel wants the weight as [vocab, dim] row-major, which is how the
-	// safetensors file stores the tied embedding, so no transpose is needed on
-	// this path at all.
-	if (model.tokenEmbed.shape.length === 2 && x.shape.length === 1) {
-		const direct = projectVocab(tree.ref(model.tokenEmbed), x.ref);
-		if (direct) {
-			x.dispose();
-			return direct;
-		}
-		if (!declineReported) {
-			declineReported = true;
-			const why = projectVocabDecline(model.tokenEmbed, x);
-			if (why) console.info(`[gemma3] vocab projection using the stock path: ${why}`);
-		}
-	}
-
 	return runLogitsStockPath(model, x);
 }
 
