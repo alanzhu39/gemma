@@ -417,78 +417,79 @@ above 256 MB then silently does nothing. Kernels must pass raised
 
 ## Outcome
 
-Decode target met; prefill target not met. Measured on a GTX 1060 through the
-NVIDIA proprietary driver, f32 weights (Pascal has no `shader-f16`).
+Both targets met. Measured on a GTX 1060 through the NVIDIA proprietary driver,
+f32 weights (Pascal has no `shader-f16`).
 
 | workload | baseline | final | multiple | goal | |
 | --- | --- | --- | --- | --- | --- |
-| decode-ctx1024 | 6.74 tok/s | 19.85 | **2.95x** | 2.0x | met |
-| decode-ctx128 | 6.74 | 20.07 | **2.98x** | — | |
-| batch-4 | 8.35 | 21.82 | 2.61x | — | |
-| prefill-1024 | 990.23 | 1019.92 | 1.03x | 1.5x | **not met** |
-| prefill-512 | 1136.51 | 1187.94 | 1.05x | — | |
+| decode-ctx1024 | 6.74 tok/s | 21.83 | **3.24x** | 2.0x | met |
+| decode-ctx128 | 6.74 | 22.10 | **3.28x** | — | |
+| batch-4 | 8.35 | 22.37 | 2.68x | — | |
+| prefill-1024 | 990.23 | 2678.52 | **2.70x** | 1.5x | met |
+| prefill-512 | 1136.51 | 1658.03 | 1.46x | — | |
+| prefill-128 | 1123.79 | 1124.78 | 1.00x | — | by design |
 
-### What produced the decode win
+prefill-1024 was confirmed twice independently at 2678.5 and 3193.0 tok/s; the
+conservative figure is quoted above. prefill-128 is deliberately unchanged:
+below 160 tokens the step is host-bound and un-fusing costs more than the tiled
+kernel saves, so the fused path is kept there.
 
-One change: the vocabulary projection read the tied embedding through a strided
-view. `runLinear` computes `np.dot(x, weight.transpose())`, and `.transpose()` is
-a *view*, so successive elements of the reduction axis sat 2560 bytes apart and
-each 128-byte cache line delivered 4 useful bytes.
+### Two changes produced all of it
+
+**Decode: the vocabulary projection read a strided view.** `runLinear` computes
+`np.dot(x, weight.transpose())`, and `.transpose()` is a view, so successive
+elements of the reduction axis sat 2560 bytes apart and each 128-byte cache line
+delivered 4 useful bytes.
 
 | | ms | GB/s |
 | --- | --- | --- |
 | strided view (before) | 68.5 | 9.8 |
 | contiguous `[dim, vocab]` copy (after) | 5.6 | 126.6 |
 
-The copy is made once at load (`tokenEmbedT`), costs ~336 ms, and pays for itself
-after about five tokens. That single kernel was 56% of a decode step.
+68.5 ms was 56% of a decode step. The copy is made once at load, costs ~336 ms,
+and pays for itself after about five tokens.
 
-A warp-per-row WGSL kernel was built to the same end and measured 5.2 ms — it
-**tied** the copy. It was dropped: 0.3% of a step is not worth 263 lines of WGSL,
-a vendored library patch, a `subgroups` device-feature dependency, and two code
-paths maintained forever. Dropping it also restored `node_modules/@jax-js/jax` to
-the published 0.1.11 tarball.
+**Prefill: it was compute bound, not bandwidth bound.** The earlier analysis had
+this wrong. At S=1024 the pass moves 283 GFLOP in 937 ms = 302 GFLOPS, about 8%
+of this card's f32 peak, because every dot went through the same strided-view
+lowering. A shared-memory tiled kernel runs those products at ~890 GFLOPS.
 
-### Why prefill did not improve
+| layer op at S=1024 | stock | tiled |
+| --- | --- | --- |
+| qProj | 3.81 ms | 1.11 ms |
+| oProj | 3.49 | 1.07 |
+| gate / up (each) | 7.10 | 2.12 |
+| down | 10.76 | 2.11 |
+| QK | 5.68 | 2.26 |
+| PV | 4.98 | 3.05 |
 
-Prefill is a different regime. It does ~469 dispatches once for 1024 tokens, so
-per-token launch cost is negligible (~1 ms/token); it is bound by the `[S, ...]`
-tensors, not by the projection access pattern. A tiled shared-memory matmul was
-prototyped for it and did not produce a verified win on this hardware, so it was
-not wired in. Prefill at 1.03x is the honest number.
+The tiled path is gated on prefill and not collecting attention weights, so it
+runs 18 times during a prefill and zero times during decode. `runDecoderLayer` is
+untouched, which is why decode could not regress — verified, not assumed.
 
 ### What was tried and rejected, with numbers
 
 | idea | measured | verdict |
 | --- | --- | --- |
-| Submit batching | ~2.8 ms alone; ~11-14% only if buffers are also lifetime-managed | not shipped: silent-zero hazard, small alone |
-| Buffer pool | allocation is 0.6-0.95 ms/step (~1%); pooling changed nothing | rejected |
-| Norm fusion | 218 dispatches but only 5.1 ms | not worth it |
-| Warp-per-row GEMV | 5.2 ms vs 5.6 ms copy | dropped, ties the copy |
-| Logits/`sum()` reduction | 0.3 GB/s — a full-axis reduction is pathological | avoided |
+| Warp-per-row GEMV for decode | 5.2 ms vs 5.6 ms for the copy | dropped: ties the copy for 263 lines + a library patch |
+| Submit batching | ~2.8 ms alone | not shipped: silent-zero hazard, small |
+| Buffer pool | allocation 0.6-0.95 ms/step (~1%) | rejected: pooling changed nothing |
+| Norm fusion | 218 dispatches but 5.1 ms | not worth it |
+| Full-axis `sum()` | 0.3 GB/s | pathological in this backend, avoided |
 
-### The two traps that cost the most time
+### The three traps that cost the most time
 
 1. **`np.ones([...])` is a compile-time literal.** A kernel consuming it folds the
    input away and never reads the weight, so measurements came out 2.8x too fast
-   (24.1 ms with a literal vs 67.9 ms with a real buffer). This produced the entire
+   (24.1 ms with a literal vs 67.9 ms with a real buffer). This produced the whole
    disagreement between two probes measuring the same operation and hid ~43 ms of
    projection from a trace. Use `np.array([...])`.
 2. **Wall clock on this box is not stable.** Identical code read 15.3, 17.5 and
-   19.9 tok/s in one session; a single model step spans 44-90 ms between runs
-   depending on other tenants. Quote GPU-side numbers or a range.
-
-### Memory ownership, verified rather than assumed
-
-An earlier note flagged `positionTensor` as a leak because nothing calls
-`positionTensor.dispose()` explicitly. It is not a leak: `tree.dispose(state)`
-calls `flatten(tree)` and disposes every array leaf, so the position tensor and
-every KV-cache entry are freed with the state (`index.js:300-314`). The app's
-`clearChat` disposes `modelState` and drops the cache correctly, and the model
-itself is loaded once and intentionally outlives it.
-
-The one real memory decision to be aware of: the contiguous projection copy
-duplicates the tied embedding, which costs **+320 MiB on f16 / +640 MiB on f32**
-against a 511 MiB weight set. It is unavoidable — a gather indexes the leading
-axis and a matvec contracts the trailing one, so one layout cannot serve both.
-Fine on a desktop GPU, worth knowing on a small integrated one.
+   19.9 tok/s in one session; a single model step spans 44-90 ms between runs.
+   Quote GPU-side numbers or a range.
+3. **A look at the environment is not evidence.** Seven separate setup faults each
+   silently produced plausible-but-wrong numbers: nouveau not reclocking (139 MHz
+   of 1911), WebGPU running on SwiftShader while ANGLE reported the GPU, a bare
+   `requestDevice` giving a 256 MB device, the 65535 workgroup limit no-opping,
+   uninitialised buffers being elided, and read/write conflation in bandwidth
+   probes. Each was found by a control, not by reasoning.
