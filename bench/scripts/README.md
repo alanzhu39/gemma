@@ -1,32 +1,34 @@
 # Diagnostic probes
 
-Standalone measurement tools. Each isolates one question and reports numbers with
-the shape they were measured in.
+Standalone measurement tools, each isolating one question. Every one takes
+`bench/lock.mjs` before touching the GPU.
 
 | probe | question |
 | --- | --- |
-| `bandwidth-probe.ts` | What read / copy bandwidth can this card sustain? |
-| `gemv-compare.ts` | Which GEMV access pattern wins, at the real working-set size? |
-| `probe-sampling.ts` | How much of a step is token sampling? |
-| `probe-step-phases.ts` | Where does a real decode step spend its time? |
-| `probe-gemv-variants.ts` | Which part of the projection is slow? |
-| `gpu-error-detect.ts` | Does the gate's error detector actually fire? |
-| `dispatch-cost.ts` | What does one dispatch cost, in the shape we actually run? |
-| `submit-shape.ts` | Does batching submits help with real work between them? |
-| `submit-hazard.ts` | What happens if a buffer is destroyed before its submit? |
+| `bandwidth-probe.ts` | Sustained read vs copy bandwidth |
+| `gemv-compare.ts` | Which GEMV access pattern wins at the real working set |
+| `probe-transpose-cost.ts` | Is `weight.transpose()` a strided read? (the 3.8x) |
+| `probe-projection-real.ts` | Why did probes disagree by 2.8x (`np.ones` elision) |
+| `probe-decode-breakdown.ts` | Full per-phase breakdown, timestamp-query based |
+| `probe-final-ab.ts` | Interleaved A/B of the candidate fixes |
+| `probe-post-fix.ts` | Re-ranking after the projection fix |
+| `dispatch-cost.ts` | Cost per dispatch, in the shape actually run |
+| `submit-shape.ts` | Does batching submits help with real work between |
+| `submit-hazard.ts` | What happens if a buffer is destroyed before its submit |
+| `gpu-error-detect.ts` | Does the gate's error detector actually fire |
 
-## Rules these all follow, learned the hard way
+## Rules, each learned by getting it wrong
 
-1. **Force completion.** Read a value back out. Without it jax-js never dispatches
-   and you measure nothing — one probe reported 1973 GB/s on a 192 GB/s card.
-2. **Reject anything above hardware peak.** It is always a bug, never a fast kernel.
-3. **Request raised device limits.** A bare `requestDevice()` gives 256 MB and
-   16 KiB workgroup storage; larger working sets then silently do nothing.
-4. **Warm up properly.** One warm pass is not enough for a 640 MiB tensor to be
-   resident. A single-warmup probe once made a bare `np.dot` appear 2.6x faster
-   than the jit'd version; with three warmups they are identical (~70 ms).
-5. **Measure the shape you actually run.** Batched-submit cost and per-submit cost
-   differ by 8x. 160 MiB and 640 MiB GEMV differ by 2.4x.
-6. **Verify output before timing.** An unverified kernel can be elided.
-7. **State the shape with the number.** A figure without its configuration is not
-   reproducible.
+1. **Force completion.** Read a value back. Without it the work is elided and you
+   measure nothing.
+2. **Reject anything above hardware peak** (192 GB/s here). Always a probe bug.
+3. **`np.ones(...)` is a compile-time literal.** A kernel consuming it folds the
+   input away and never reads the weight. This single mistake produced the 2.8x
+   disagreement between two probes (27 ms vs 73 ms) and hid 43 ms of projection
+   from the trace. Use a real host buffer: `np.array([...])`.
+4. **Request raised device limits**, or large buffers silently no-op.
+5. **Warm up three times.** One pass is not enough for a 640 MiB tensor to be
+   resident.
+6. **Measure the shape you actually run.** Batched vs per-submit differs 8x;
+   160 MiB vs 640 MiB GEMV differs 2.4x.
+7. **State the shape with the number.**
