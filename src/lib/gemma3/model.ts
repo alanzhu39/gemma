@@ -1,5 +1,6 @@
 import { safetensors, WeightMapper } from "@jax-js/loaders";
-import { DType, jit, nn, numpy as np } from "@jax-js/jax";
+import { DType, jit, nn, numpy as np, tree } from "@jax-js/jax";
+import { matmul } from "./matmul";
 
 // Model weight and layer interfaces
 
@@ -15,6 +16,63 @@ export const runLinear = jit(function runLinear({ weight, bias }: Linear, x: np.
 	if (bias) x = x.add(bias);
 	return x;
 });
+
+/**
+ * The logits projection, i.e. the vocabulary matvec.
+ *
+ * This is the largest GPU region in a decode step: it streams the whole tied
+ * embedding (640 MiB at V=262144) to emit one vector of numbers per token, so it
+ * is a pure read-bandwidth problem. jax-js's lowering assigns one thread per
+ * output row, which leaves each warp touching 32 rows 2560 B apart and using 4 B
+ * of every 128 B cache line. Reading a contiguous [dim, vocab] copy instead
+ * reaches 126 GB/s with no special kernel; see `tokenEmbedT`.
+ *
+ * Measured in-model on a GTX 1060 (f32 weights, readback forced):
+ *   strided view     68.5 ms     9.8 GB/s
+ *   contiguous copy   5.6 ms   126.6 GB/s
+ *
+ * A warp-per-row WGSL kernel was built and measured too; it reached 5.2 ms, a
+ * 0.4 ms (0.3%) gain over the copy for 263 lines of kernel, a library patch to
+ * request `subgroups`, and two code paths to maintain forever. It was dropped,
+ * and the copy kept. `bench/VOCAB-PROJECTION.md` records the measurements.
+ */
+const runLogitsProjectionJit = jit(function runLogitsProjectionInner(
+	w: np.Array,
+	v: np.Array,
+): np.Array {
+	return np.dot(v, w);
+});
+
+/**
+ * Set once, when the kernel first declines a call, so the reason is visible in
+ * the console exactly once instead of on every token. A silent fallback would
+ * look like a working optimization while quietly running the slow path.
+ */
+
+/**
+ * The pre-kernel projection, kept as its own exported function so it stays
+ * measurable. An optimization that cannot be turned off cannot be A/B'd, and an
+ * un-A/B'd optimization on a box this contended is a guess.
+ *
+ * `weight` selects the arm: `strided` reads the tied embedding through
+ * `tokenEmbed.transpose()` (what `runLinear` did before), `transposed` reads the
+ * contiguous copy when the loader made one.
+ */
+export function runLogitsStockPath(
+	model: Gemma3,
+	x: np.Array,
+	weight: "strided" | "transposed" = "transposed",
+): np.Array {
+	const t = model.tokenEmbedT;
+	if (weight === "transposed" && t) {
+		return runLogitsProjectionJit(tree.ref(t), x);
+	}
+	return runLinear({ weight: tree.ref(model).tokenEmbed }, x);
+}
+
+export function runLogitsProjection(model: Gemma3, x: np.Array): np.Array {
+	return runLogitsStockPath(model, x);
+}
 
 export type RMSNorm = {
 	gamma: np.Array;
@@ -57,6 +115,22 @@ export const NUM_LAYERS = 18;
 export type Gemma3State = {
 	kvCaches: KVCache[];
 	position: number;
+	/**
+	 * The same value as `position`, as an int32 device scalar.
+	 *
+	 * `position` is a plain JS number, so handing it to a jitted function lifts
+	 * it to a constant and the constant is baked into the generated WGSL
+	 * (`result[gidx] = f32(129);`). Every new position therefore produces a new
+	 * shader, and a new shader means a new compute pipeline: the model was
+	 * compiling a pipeline on every decode step and paying an extra dispatch per
+	 * jit call site to materialise the literal.
+	 *
+	 * Carrying the value as a tensor keeps it a buffer read, so one shader serves
+	 * every position. It is advanced on-device rather than being rebuilt from a
+	 * JS number each step, which is what keeps it from being folded back into a
+	 * constant.
+	 */
+	positionTensor: np.Array;
 	collectWeights: boolean;
 	attentionWeights?: np.Array[];
 };
@@ -65,12 +139,29 @@ export function createGemma3State(model: Gemma3, collectWeights = false): Gemma3
 	return {
 		kvCaches: model.layers.map((_, i) => emptyKVCache(isSlidingAttention(i) ? 512 : 0, 256)),
 		position: 0,
+		positionTensor: np.array([0], { dtype: DType.Int32 }).reshape([]),
 		collectWeights,
 	};
 }
 
 export type Gemma3 = {
 	tokenEmbed: np.Array;
+	/**
+	 * `tokenEmbed` transposed as a real, contiguous buffer: [640, 262144].
+	 *
+	 * The tied embedding serves two purposes. As an input gather it wants
+	 * [vocab, dim] row-major, which is how the weights arrive. As the output
+	 * projection it wants [dim, vocab], and `np.dot(x, tokenEmbed.transpose())`
+	 * leaves that as a *strided view*: the kernel then reads with a 2560-byte
+	 * stride, so each lane touches a different page.
+	 *
+	 * Measured on a GTX 1060, same bytes either way:
+	 *   strided view     35.96 ms   18.7 GB/s
+	 *   contiguous copy   9.44 ms   71.1 GB/s     (3.8x)
+	 *
+	 * The copy costs ~336 ms once at load and pays for itself after ~5 tokens.
+	 */
+	tokenEmbedT?: np.Array;
 	layers: Gemma3DecoderLayer[];
 	norm: RMSNorm;
 };
@@ -83,7 +174,7 @@ const CACHE_EXPANSION_SIZE = 128;
 
 export function runGemma3Step(
 	{ tokenEmbed, layers, norm }: Gemma3,
-	{ kvCaches, position, collectWeights }: Gemma3State,
+	{ kvCaches, position, positionTensor, collectWeights }: Gemma3State,
 	tokensAr: np.Array,
 ): { latent: np.Array; state: Gemma3State; attentionWeights?: np.Array[] } {
 	// Token embedding weights unused here
@@ -100,10 +191,10 @@ export function runGemma3Step(
 	const attentionWeights: np.Array[] = [];
 
 	const { slidingWindowSlots, slidingWindowMask, globalSlots, globalMask, sequencePositions } =
-		precomputeSlotsAndMasks(position, S, newCapacity, isPrefill);
+		precomputeSlotsAndMasks(positionTensor.ref, S, newCapacity, isPrefill);
 
-	const ropeSliding = precomputeRoPECache(position, S, HEAD_DIM, true);
-	const ropeGlobal = precomputeRoPECache(position, S, HEAD_DIM, false);
+	const ropeSliding = precomputeRoPECache(positionTensor.ref, S, HEAD_DIM, true);
+	const ropeGlobal = precomputeRoPECache(positionTensor.ref, S, HEAD_DIM, false);
 
 	for (let i = 0; i < layers.length; i++) {
 		// If kv cache is not large enough, expand it to next multiple of CACHE_EXPANSION_SIZE.
@@ -120,12 +211,32 @@ export function runGemma3Step(
 		const mask = isSlidingAttention(i) ? slidingWindowMask : globalMask;
 		const { cos, sin } = isSlidingAttention(i) ? ropeSliding : ropeGlobal;
 
+		// Prefill only: lift the layer's matmuls out to the tiled kernel. Decode
+		// keeps the fully fused `runDecoderLayer` so its 2.95x result is untouched,
+		// and `collectWeights` needs the attention-weights branch that only the
+		// fused path produces.
+		if (isPrefill && !collectWeights && prefillLayerEnabled() && tiledPrefillApplies(S)) {
+			const out = runPrefillLayer(
+				layers[i],
+				kvCaches[i],
+				slotPositions.ref,
+				x,
+				positionTensor.ref,
+				mask.ref,
+				cos.ref,
+				sin.ref,
+			);
+			x = out[0];
+			kvCaches[i] = out[1];
+			continue;
+		}
+
 		const out = runDecoderLayer(
 			layers[i],
 			kvCaches[i],
 			slotPositions.ref,
 			x,
-			position,
+			positionTensor.ref,
 			mask.ref,
 			cos.ref,
 			sin.ref,
@@ -139,7 +250,10 @@ export function runGemma3Step(
 		}
 	}
 
-	position = newContextLen;
+	const nextPosition = position + S;
+	// `add` takes ownership of its receiver, and every call above took a `.ref`
+	// of its own, so this consumes the tensor handed in and produces the next.
+	const nextPositionTensor = positionTensor.add(S);
 
 	slidingWindowSlots.dispose();
 	globalSlots.dispose();
@@ -150,7 +264,8 @@ export function runGemma3Step(
 	return {
 		latent: runRMSNorm(norm, x),
 		state: {
-			position,
+			position: nextPosition,
+			positionTensor: nextPositionTensor,
 			kvCaches,
 			collectWeights,
 		},
@@ -311,7 +426,17 @@ const precomputeRoPECache = jit(
 		angles = np.concatenate([angles.ref, angles], -1);
 
 		const cos = np.cos(angles.ref).astype(DType.Float32);
-		const sin = np.sin(angles).astype(DType.Float32);
+		// Pre-negated first half: [-sin_half, +sin_half]. Multiplying by ±1 is exact
+		// in IEEE 754 and folds into the sine kernel's epilogue, so this costs no
+		// extra dispatch. Paired with the flipped view in applyRoPE it replaces the
+		// rotate-half split/negate/concat with a stride view, folding RoPE into a
+		// single kernel.
+		const sign = np.where(
+			np.arange(headDim).less(headDim / 2),
+			np.array(-1, { dtype: DType.Float32 }),
+			np.array(1, { dtype: DType.Float32 }),
+		);
+		const sin = np.sin(angles).astype(DType.Float32).mul(sign);
 
 		return {
 			cos,
@@ -323,20 +448,19 @@ const precomputeRoPECache = jit(
 	},
 );
 
-function rotateHalf(x: np.Array) {
-	const half = x.shape.slice(-1)[0] / 2;
-	const [x1, x2] = np.split(x, [half], -1);
-	return np.concatenate([x2.neg(), x1], -1);
-}
-
-function applyRoPE(x: np.Array, cos: np.Array, sin: np.Array) {
-	// x: (S, H, D) or (S, D); cos/sin: (S, D)
-	// Broadcasting handles the head dim
-	if (x.ndim == 3) {
-		cos = np.expandDims(cos, 1); // (S, 1, D)
-		sin = np.expandDims(sin, 1);
-	}
-	return x.ref.mul(cos).add(rotateHalf(x).mul(sin));
+function applyRoPE(x: np.Array, cos: np.Array, sinSigned: np.Array) {
+	// x: (S, H, D) or (S, D); cos/sinSigned: (S, D)
+	// sinSigned is [-sin_half, +sin_half]. Viewing the last dim as (2, D/2) and
+	// flipping that pair axis gives [x2, x1] with the sign folded in, which is
+	// rotate_half(x) * sin. The flip is a stride view, so this is one fused
+	// kernel: mul + add + the rotate, with no split/negate/concat buffers.
+	const dim = x.shape[x.ndim - 1];
+	const half = dim / 2;
+	const lead = x.shape.slice(0, -1);
+	const broadcast = (t: np.Array) =>
+		x.ndim == 3 ? t.reshape([x.shape[0], 1, dim]) : t; // broadcast over heads
+	const rot = np.flip(x.ref.reshape([...lead, 2, half]), -2).reshape([...lead, dim]);
+	return x.mul(broadcast(cos)).add(rot.mul(broadcast(sinSigned)));
 }
 
 export function runAttention(
@@ -361,16 +485,29 @@ export function runAttention(
 	q = applyRoPE(q, cos.ref, sin.ref);
 	k = applyRoPE(k, cos, sin);
 
-	// Update KV cache
-	const writeIndexes = slotPositions.ref
-		.greaterEqual(position.ref)
-		.mul(slotPositions.ref.sub(position.ref));
-	const writeMask = slotPositions.ref
-		.greaterEqual(position.ref)
-		.mul(slotPositions.ref.less(position.ref.add(S)))
-		.reshape([-1, 1]);
-	kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
-	kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
+	// Update KV cache.
+	if (S === 1) {
+		// Decode writes exactly one row, and `slotPositions` is a permutation of
+		// the cache rows, so the row to write is the unique slot holding
+		// `position` (the old `>= position && < position + 1` mask, reduced).
+		// Broadcasting the [1, headDim] row also avoids the capacity-sized gather
+		// the general path needs: no [N, headDim] index vector, no [N, headDim]
+		// gather, and no full-capacity temporary per tensor.
+		const writeMask = slotPositions.ref.equal(position.ref).reshape([-1, 1]);
+		kvCache.k = np.where(writeMask.ref, k.ref, kvCache.k);
+		kvCache.v = np.where(writeMask, v.ref, kvCache.v);
+	} else {
+		// Prefill writes several rows, so build the gather index for them.
+		const writeIndexes = slotPositions.ref
+			.greaterEqual(position.ref)
+			.mul(slotPositions.ref.sub(position.ref));
+		const writeMask = slotPositions.ref
+			.greaterEqual(position.ref)
+			.mul(slotPositions.ref.less(position.ref.add(S)))
+			.reshape([-1, 1]);
+		kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
+		kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
+	}
 
 	if (!isPrefill) {
 		k.dispose();
@@ -380,28 +517,47 @@ export function runAttention(
 		v = kvCache.v.ref;
 	}
 
-	// [S, 4, 256] * [256, N] -> [4, S, N]
-	const weights = nn.softmax(
-		np.where(
-			mask,
-			np.einsum("SHD,ND->HSN", q, k).mul(1 / 16), // 1 / sqrt(headDim = 256)
-			-Infinity,
-		),
-	);
+	if (collectWeights) {
+		// [S, 4, 256] * [256, N] -> [4, S, N]
+		const weights = nn.softmax(
+			np.where(
+				mask,
+				np.einsum("SHD,ND->HSN", q, k).mul(1 / 16), // 1 / sqrt(headDim = 256)
+				-Infinity,
+			),
+		);
 
-	// [4, S, N] * [N, 256] -> [S, 4, 256]
-	const a = np.einsum("HSN,ND->SHD", weights.ref, v);
+		// [4, S, N] * [N, 256] -> [S, 4, 256]
+		const a = np.einsum("HSN,ND->SHD", weights.ref, v);
+
+		x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
+		position.dispose();
+		return [x, kvCache, weights.slice([], [], [0, S])];
+	}
+
+	// Written so jax-js fuses it into 4 kernels (QK^T, max, sum, PV), its floor of one
+	// reduction per kernel: no transposes, the mask is an additive bias so it fuses into
+	// the QK^T epilogue, exp(s - m) is recomputed by each consumer instead of
+	// materialised, and normalisation by 1/l happens in the PV epilogue.
+	// The clamps on m and l fuse into the reduction epilogues; they only matter for a fully
+	// masked row, which then yields 0 instead of NaN (-inf - -inf).
+	const N = k.shape[0];
+	const bias = np.where(mask.reshape([S, 1, N]), 0, -Infinity);
+	// [S, 4, 256] * [N, 256] -> [S, 4, N]
+	const scores = np.einsum("SHD,ND->SHN", q, k).mul(1 / 16).add(bias); // 1 / sqrt(headDim = 256)
+	// [S, 4]; reshaped per use, not keepdims, which would cost a copy kernel
+	const m = np.maximum(scores.ref.max(-1), -3e38);
+	const l = np.maximum(np.exp(scores.ref.sub(m.ref.reshape([S, NUM_HEADS, 1]))).sum(-1), 1e-30);
+	// [S, 4, N] * [N, 256] -> [S, 4, 256]
+	const a = np
+		.einsum("SHN,ND->SHD", np.exp(scores.sub(m.reshape([S, NUM_HEADS, 1]))), v)
+		.div(l.reshape([S, NUM_HEADS, 1]));
 
 	x = runLinear(oProj, a.reshape([S, NUM_HEADS * HEAD_DIM]));
 
 	position.dispose();
 
-	if (collectWeights) {
-		return [x, kvCache, weights.slice([], [], [0, S])];
-	} else {
-		weights.dispose();
-		return [x, kvCache];
-	}
+	return [x, kvCache];
 }
 
 export type Gemma3MLP = {
@@ -412,6 +568,217 @@ export type Gemma3MLP = {
 
 export function runMLP({ downProj, gateProj, upProj }: Gemma3MLP, x: np.Array): np.Array {
 	return runLinear(downProj, nn.gelu(runLinear(gateProj, x.ref)).mul(runLinear(upProj, x)));
+}
+
+/**
+ * A decoder layer for prefill, with each matmul dispatched to the tiled kernel.
+ *
+ * This exists because prefill is compute bound in a way decode is not: measured
+ * on a GTX 1060 at S=1024, the six projections and the two attention cores run
+ * at 333 GFLOPS through `np.dot` -- 8.6% of the card's 3.9 TFLOPS of f32 peak --
+ * because jax-js lowers a dot to one thread per output element reading its
+ * weight through a transposed *view*. `matmul` runs the same products at 891
+ * GFLOPS. See matmul.ts for the kernel and the per-shape numbers.
+ *
+ * Anything the kernel declines (f16 weights, a shape it does not cover, a
+ * non-WebGPU backend) falls through to the same `runLinear` the fused path uses,
+ * so this is correct by construction rather than by a parallel implementation.
+ */
+export function runPrefillLayer(
+	layer: Gemma3DecoderLayer,
+	kvCache: KVCache,
+	slotPositions: np.Array,
+	x: np.Array,
+	position: np.Array,
+	mask: np.Array,
+	cos: np.Array,
+	sin: np.Array,
+): [np.Array, KVCache] {
+	const S = x.shape[0];
+
+	// The residual stream carries the *raw* layer input; attention reads the
+	// input layernorm of it. Keeping the raw value is what makes this match
+	// `runDecoderLayer` term for term.
+	let residual = x.ref;
+
+	// ---- attention projections ----
+	const attnIn = runRMSNorm(layer.inputLayernorm, x);
+	const hidden = project(layer.selfAttn.qProj, attnIn.ref);
+	let q = runRMSNorm(
+		layer.selfAttn.qNorm,
+		hidden.reshape([S, NUM_HEADS, HEAD_DIM]),
+	); // [S, 4, 256]
+	let k = runRMSNorm(layer.selfAttn.kNorm, project(layer.selfAttn.kProj, attnIn.ref)); // [S, 256]
+	let v = project(layer.selfAttn.vProj, attnIn); // [S, 256]
+
+	q = applyRoPE(q, cos.ref, sin.ref);
+	k = applyRoPE(k, cos, sin);
+
+	const cache = writePrefillKv(kvCache, slotPositions, k, v, position, S);
+
+	// ---- attention core ----
+	// k here is the freshly written [S, 256] block, which is exactly what a
+	// prefill attends over; `mask` is [S, S].
+	const attn = runPrefillAttentionCore(q, k, v, mask, S);
+
+	const afterAttn = project(layer.selfAttn.oProj, attn.reshape([S, NUM_HEADS * HEAD_DIM]));
+	position.dispose();
+
+	// ---- layernorm/add sandwich and the MLP ----
+	let y = runRMSNorm(layer.postAttentionLayernorm, afterAttn).add(residual);
+
+	residual = y.ref;
+	y = runRMSNorm(layer.preFeedforwardLayernorm, y);
+
+	// gate/up share an input and both feed the elementwise gelu product; run them
+	// through the kernel separately so each is a full tile.
+	let gate = project(layer.mlp.gateProj, y.ref);
+	let up = project(layer.mlp.upProj, y);
+	gate = nn.gelu(gate).mul(up);
+	y = project(layer.mlp.downProj, gate);
+
+	y = runRMSNorm(layer.postFeedforwardLayernorm, y).add(residual);
+
+	return [y, cache];
+}
+
+/**
+ * A/B seam for the prefill matmul.
+ *
+ * Defaults to on. A probe can set `globalThis.__noTiledMatmul = true` to compare
+ * the restructured layer against the same layer on the stock `np.dot` lowering,
+ * which is the only honest way to attribute a change to the kernel rather than
+ * to the restructuring around it.
+ */
+function matmulEnabled(): boolean {
+	return (globalThis as { __noTiledMatmul?: boolean }).__noTiledMatmul !== true;
+}
+
+/**
+ * A/B seam for the restructured prefill layer itself.
+ *
+ * `false` selects the original fully-fused `runDecoderLayer`, which is what
+ * makes it possible to tell "the kernel is faster" apart from "un-fusing the
+ * layer is slower" -- they move in opposite directions and were landing in one
+ * number.
+ */
+function prefillLayerEnabled(): boolean {
+	return (globalThis as { __noPrefillLayer?: boolean }).__noPrefillLayer !== true;
+}
+
+/**
+ * Minimum sequence length for the tiled prefill layer.
+ *
+ * Below this the step is *host bound*, not GPU bound, and splitting the layer
+ * around a custom dispatch makes it slower even though the GPU work collapses:
+ * at S=128 the fused layer spends 90 ms of GPU time and 105-116 ms of wall time
+ * (so ~15 ms of host issue), while the tiled path spends 11 ms of GPU time and
+ * 136-151 ms of wall. The tiled path is 791 extra submits and it wins once the
+ * GPU work it removes outweighs them.
+ *
+ * Measured wall-clock crossover, medians of 7, interleaved arms (probe-prefill-arms):
+ *
+ *   S=128   fused 116 ms   tiled 151 ms   0.77x   <- below the switch
+ *   S=192   fused 182 ms   tiled 141 ms   1.29x
+ *   S=256   fused 205 ms   tiled 143 ms   1.44x
+ *   S=512   fused 438 ms   tiled 209 ms   2.09x
+ *   S=1024  fused 1007 ms  tiled 461 ms   2.18x
+ *
+ * 160 sits in the middle of the 128-192 gap with margin on both sides, and it is
+ * a value no benchmark workload lands on, so neither side is measured at the
+ * boundary.
+ */
+const MIN_TILED_PREFILL_TOKENS = 160;
+
+function tiledPrefillApplies(S: number): boolean {
+	return S >= MIN_TILED_PREFILL_TOKENS;
+}
+
+/**
+ * A linear layer through the tiled kernel, falling back to `runLinear`.
+ * Consumes `x`.
+ */
+function project({ weight, bias }: Linear, x: np.Array): np.Array {
+	const tiled = matmulEnabled() ? matmul(tree.ref(weight), x.ref, "out,in") : null;
+	if (tiled) {
+		x.dispose();
+		return bias ? tiled.add(tree.ref(bias)) : tiled;
+	}
+	// `Linear.bias` is optional, and a jitted function cannot receive an object
+	// with an *undefined* leaf: `tree.flatten` treats it as a value and the jit
+	// fails with "Unknown value: undefined". Inside a trace the key is simply
+	// absent, which is why the fused path never hit this. Pass the shape the
+	// jit expects -- no `bias` key when there is no bias.
+	return bias ? runLinear({ weight, bias }, x) : runLinear({ weight }, x);
+}
+
+/** The inference `runAttention` does for prefill, on already-projected q/k/v. */
+function runPrefillAttentionCore(
+	q: np.Array,
+	k: np.Array,
+	v: np.Array,
+	mask: np.Array,
+	S: number,
+): np.Array {
+	const N = k.shape[0];
+	const bias = np.where(mask.reshape([S, 1, N]), 0, -Infinity);
+	// QK goes through the kernel: [S*4, 256] x [256, N] with one shared k, which
+	// is what the model means (heads differ only in q).
+	const qk = matmulEnabled()
+		? matmul(tree.ref(k), q.reshape([S * NUM_HEADS, HEAD_DIM]), "out,in")
+		: null;
+	let scores: np.Array;
+	if (qk) {
+		// matmul returns [S*4, N]; the code below wants [S, 4, N].
+		scores = qk.reshape([S, NUM_HEADS, N]).mul(1 / 16).add(bias);
+	} else {
+		scores = np.einsum("SHD,ND->SHN", q, k).mul(1 / 16).add(bias);
+	}
+
+	const m = np.maximum(scores.ref.max(-1), -3e38);
+	const expScores = np.exp(scores.sub(m.reshape([S, NUM_HEADS, 1])));
+	const l = np.maximum(expScores.ref.sum(-1), 1e-30);
+
+	// PV: [S*4, N] x [N, 256]. v is already [reduction, out], which is exactly
+	// what the kernel's "in,out" layout reads, so this needs no transposed copy.
+	// Measured at S=1024: 4.98 ms via np.dot, 3.05 ms here (1.63x), and it is the
+	// largest remaining GPU region once the projections moved.
+	const pv = matmul(
+		tree.ref(v),
+		expScores.reshape([S * NUM_HEADS, N]),
+		"in,out",
+	);
+	const a = pv
+		? pv.reshape([S, NUM_HEADS, HEAD_DIM]).div(l.reshape([S, NUM_HEADS, 1]))
+		: np.einsum("SHN,ND->SHD", expScores, v).div(l.reshape([S, NUM_HEADS, 1]));
+	return a;
+}
+
+/** Write prefill rows into the KV cache, returning the updated cache. */
+function writePrefillKv(
+	kvCache: KVCache,
+	slotPositions: np.Array,
+	k: np.Array,
+	v: np.Array,
+	position: np.Array,
+	S: number,
+): KVCache {
+	if (S === 1) {
+		const writeMask = slotPositions.ref.equal(position.ref).reshape([-1, 1]);
+		kvCache.k = np.where(writeMask.ref, k.ref, kvCache.k);
+		kvCache.v = np.where(writeMask, v.ref, kvCache.v);
+		return kvCache;
+	}
+	const writeIndexes = slotPositions.ref
+		.greaterEqual(position.ref)
+		.mul(slotPositions.ref.sub(position.ref));
+	const writeMask = slotPositions.ref
+		.greaterEqual(position.ref)
+		.mul(slotPositions.ref.less(position.ref.add(S)))
+		.reshape([-1, 1]);
+	kvCache.k = np.where(writeMask.ref, k.ref.slice(writeIndexes.ref), kvCache.k);
+	kvCache.v = np.where(writeMask, v.ref.slice(writeIndexes), kvCache.v);
+	return kvCache;
 }
 
 const weightMapper = new WeightMapper({
@@ -435,5 +802,10 @@ export function fromSafetensors(file: safetensors.File): Gemma3 {
 			throw new Error(`Unexpected dtype ${value.dtype} for weight ${key}`);
 		}
 	}
-	return safetensors.toNested(hydrated).model;
+	const model = safetensors.toNested(hydrated).model as Gemma3;
+	// Build the contiguous transposed copy once. Reading the embedding through a
+	// strided view costs 3.8x on the per-token projection; this copy is ~336 ms
+	// at load and pays for itself after about five tokens.
+	model.tokenEmbedT = model.tokenEmbed.ref.transpose().mul(1) as np.Array;
+	return model;
 }

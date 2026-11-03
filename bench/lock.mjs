@@ -1,0 +1,193 @@
+/**
+ * Serialises benchmark runs across processes.
+ *
+ * Several agents share this machine. Two concurrent benchmark runs contend for
+ * the same CPU/GPU and make both sets of numbers meaningless, and on a CPU
+ * fallback renderer they also contend for the same cores. A coarse exclusive
+ * lock is the simplest thing that is actually correct.
+ *
+ * Design notes:
+ *  - The lock is only broken when the holder process is gone. A long benchmark
+ *    (a full suite on a software renderer takes hours) holds it legitimately,
+ *    so age alone must never be treated as staleness.
+ *  - Waiting sleeps instead of spinning. A busy-wait burns a core, which slows
+ *    down the run holding the lock and perturbs the very timings we want.
+ */
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const LOCK = path.join(HERE, ".cache", "bench.lock");
+
+function pidAlive(pid) {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (e) {
+		// EPERM means the process exists but belongs to someone else.
+		return e.code === "EPERM";
+	}
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function readHolder() {
+	try {
+		return JSON.parse(fs.readFileSync(LOCK, "utf8"));
+	} catch {
+		// Mid-write, empty, or corrupt.
+		return null;
+	}
+}
+
+/**
+ * Acquire the lock.
+ *
+ * Returns a *thenable* rather than a native Promise, deliberately. Acquisition
+ * only begins when it is awaited:
+ *
+ *     const release = await acquireLock();
+ *
+ * If a caller forgets the `await`, nothing is acquired and the process fails
+ * loudly on the next tick, instead of silently running without the lock and
+ * producing numbers that collide with a concurrent run. A native Promise would
+ * not let us detect that, because `await` on one bypasses the user-visible
+ * `.then`.
+ *
+ * @param {{ wait?: boolean, onWait?: (holder: object) => void }} opts
+ */
+export function acquireLock(opts = {}) {
+	let started = false;
+	let promise = null;
+
+	const begin = () => {
+		if (!promise) promise = acquireInner(opts);
+		return promise;
+	};
+
+	const thenable = {
+		then(onFulfilled, onRejected) {
+			started = true;
+			return begin().then(onFulfilled, onRejected);
+		},
+		catch(onRejected) {
+			return begin().catch(onRejected);
+		},
+		finally(onFinally) {
+			return begin().finally(onFinally);
+		},
+	};
+
+	// If nobody awaited within a tick, the caller is using the lock wrongly.
+	setTimeout(() => {
+		if (!started) {
+			console.error(
+				"[bench] acquireLock() was not awaited. Nothing was locked.\n" +
+					"         Use: const release = await acquireLock();",
+			);
+			process.exit(1);
+		}
+	}, 0);
+
+	return thenable;
+}
+
+async function acquireInner({ wait = true, onWait } = {}) {
+	fs.mkdirSync(path.dirname(LOCK), { recursive: true });
+	let announced = false;
+
+	// A unique token proves *this* process owns the lock. Without it, a process
+	// whose lock was deleted and re-taken by someone else would delete the new
+	// holder's lock on exit, and two runs would overlap.
+	const token = crypto.randomUUID();
+
+	for (;;) {
+		try {
+			// 'wx' fails if the file exists, which is the atomicity we need.
+			const fd = fs.openSync(LOCK, "wx");
+			fs.writeSync(
+				fd,
+				JSON.stringify({
+					pid: process.pid,
+					token,
+					startedAt: Date.now(),
+					argv: process.argv.slice(2),
+				}),
+			);
+			fs.closeSync(fd);
+			return async () => {
+				// Only delete the lock if it is still ours. If it was removed and
+				// re-acquired while we ran, removing it now would hand the machine to
+				// a second concurrent run.
+				const current = readHolder();
+				if (!current || current.token !== token) {
+					console.warn(
+						"[bench] lock was taken over while this run was in progress; " +
+							"not releasing it. Overlapping results should be discarded.",
+					);
+					return;
+				}
+				try {
+					fs.unlinkSync(LOCK);
+				} catch {
+					// Already gone; nothing to do.
+				}
+			};
+		} catch (e) {
+			if (e.code !== "EEXIST") throw e;
+
+			const holder = readHolder();
+
+			// A lock file we cannot parse is either being written right now or
+			// was left behind by a crash. Give it a moment before judging.
+			if (!holder) {
+				await sleep(250);
+				const again = readHolder();
+				if (!again) {
+					// Still unparseable and nobody claims it: safe to clear. There is
+					// a small race here between two waiters; unlinking a file that is
+					// already gone is harmless, and the 'wx' create below re-serialises
+					// whoever wins.
+					try {
+						fs.unlinkSync(LOCK);
+					} catch {
+						// Someone else cleared it.
+					}
+				}
+				continue;
+			}
+
+			if (!pidAlive(holder.pid)) {
+				// Two waiters can both see a dead holder. Deleting blindly would let
+				// the slower one remove a lock the faster one just created, so only
+				// remove the file if it still holds the dead pid we observed.
+				console.warn(`[bench] clearing lock left by dead process ${holder.pid}`);
+				const still = readHolder();
+				if (still && still.pid === holder.pid) {
+					try {
+						fs.unlinkSync(LOCK);
+					} catch {
+						// Another waiter won; loop and re-read.
+					}
+				}
+				continue;
+			}
+
+			if (!wait) {
+				throw new Error(
+					`another benchmark is running (pid ${holder.pid}). ` +
+						`Benchmarks are serialised so concurrent runs cannot corrupt each other.`,
+				);
+			}
+
+			if (!announced) {
+				onWait?.(holder);
+				announced = true;
+			}
+			await sleep(1000);
+		}
+	}
+}

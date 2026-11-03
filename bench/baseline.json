@@ -1,0 +1,152 @@
+{
+	"samples": [
+		{
+			"workload": "prefill-128",
+			"kind": "prefill",
+			"ms": 113.90000009536743,
+			"tokens": 128,
+			"tps": 1123.792799761429,
+			"detail": {
+				"minMs": 110.59999990463257,
+				"p90Ms": 124.40000009536743,
+				"meanMs": 116.58000001907348,
+				"spread": 1.125,
+				"runs": 5
+			}
+		},
+		{
+			"workload": "prefill-512",
+			"kind": "prefill",
+			"ms": 450.5,
+			"tokens": 512,
+			"tps": 1136.5149833518312,
+			"detail": {
+				"minMs": 447,
+				"p90Ms": 451.69999980926514,
+				"meanMs": 450.1199998855591,
+				"spread": 1.011,
+				"runs": 5
+			}
+		},
+		{
+			"workload": "prefill-1024",
+			"kind": "prefill",
+			"ms": 1034.0999999046326,
+			"tokens": 1024,
+			"tps": 990.2330529875602,
+			"detail": {
+				"minMs": 1027.8999996185303,
+				"p90Ms": 1068,
+				"meanMs": 1042.459999847412,
+				"spread": 1.039,
+				"runs": 5
+			}
+		},
+		{
+			"workload": "decode-ctx128",
+			"kind": "decode",
+			"ms": 148.27812500298023,
+			"tokens": 1,
+			"tps": 6.744083120688916,
+			"detail": {
+				"contextLen": 128,
+				"stepsPerRun": 32,
+				"minMs": 135.73125000298023,
+				"p90Ms": 152.40937501192093,
+				"spread": 1.123,
+				"runs": 5
+			}
+		},
+		{
+			"workload": "decode-ctx1024",
+			"kind": "decode",
+			"ms": 148.47187499701977,
+			"tokens": 1,
+			"tps": 6.735282355800199,
+			"detail": {
+				"contextLen": 1024,
+				"stepsPerRun": 32,
+				"minMs": 140.07500000298023,
+				"p90Ms": 160.53125,
+				"spread": 1.146,
+				"runs": 5
+			}
+		},
+		{
+			"workload": "batch-1",
+			"kind": "batch",
+			"ms": 151.78125,
+			"tokens": 1,
+			"tps": 6.588429071443278,
+			"detail": {
+				"batchSize": 1,
+				"totalTps": 6.588429071443278,
+				"batchSupported": 0,
+				"minMs": 130.18125000596046,
+				"p90Ms": 159.1875,
+				"spread": 1.223,
+				"runs": 5
+			}
+		},
+		{
+			"workload": "batch-2",
+			"kind": "batch",
+			"ms": 130.36250001192093,
+			"tokens": 1,
+			"tps": 7.670917632820447,
+			"detail": {
+				"batchSize": 2,
+				"totalTps": 15.341835265640894,
+				"batchSupported": 0,
+				"minMs": 124.43437500298023,
+				"p90Ms": 133.69374999403954,
+				"spread": 1.074,
+				"runs": 5
+			}
+		},
+		{
+			"workload": "batch-4",
+			"kind": "batch",
+			"ms": 119.8125,
+			"tokens": 1,
+			"tps": 8.346374543557642,
+			"detail": {
+				"batchSize": 4,
+				"totalTps": 33.38549817423057,
+				"batchSupported": 0,
+				"minMs": 116.52031249552965,
+				"p90Ms": 125.64687500149012,
+				"spread": 1.078,
+				"runs": 5
+			}
+		}
+	],
+	"sysInfo": {
+		"adapterInfo": {},
+		"isSoftwareRenderer": false,
+		"precision": "f32",
+		"userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.8078.4 Safari/537.36",
+		"backend": "webgpu",
+		"adaptiveFallback": false,
+		"rendererString": "ANGLE (NVIDIA, Vulkan 1.3.277 (NVIDIA NVIDIA GeForce GTX 1060 6GB (0x00001C03)), NVIDIA-550.163.1.0)",
+		"gpuDevices": [
+			"ANGLE (NVIDIA, Vulkan 1.3.277 (NVIDIA NVIDIA GeForce GTX 1060 6GB (0x00001C03)), NVIDIA-550.163.1.0)"
+		],
+		"contention": {
+			"method": "proc-cpu",
+			"cores": 4,
+			"elapsedSec": 185.8,
+			"ownCpuSec": 2.4,
+			"otherCpuSec": 732.3,
+			"otherUtilisation": 0.99,
+			"quiet": false
+		}
+	},
+	"generatedAt": "2026-10-30T19:56:08.207Z",
+	"git": {
+		"rev": "0e9fb79c47a306d13f96f3a3959cd9662a5a8d51",
+		"branch": "perf",
+		"dirty": false
+	},
+	"note": "Recorded while updown-recorder.service (PID 1500487) held ~62% of one core, so sysInfo.contention.quiet is false. The numbers are nevertheless trusted to a few percent because two runs under DIFFERENT transient interference agreed within 0.2-5.4% on every workload except batch-1 (-10.8%, spread 1.22x), which is the steady-load signature rather than measurement corruption. compare.mjs will hard-fail on quiet=false; if that becomes a problem, pause the recorder and re-record rather than loosening the threshold."
+}

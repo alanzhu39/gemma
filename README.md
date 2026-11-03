@@ -32,3 +32,21 @@ npm run dev
 ```
 
 Requires a browser with WebGPU support (Chrome 113+ or Edge 113+). Safari support is partial.
+
+## Benchmarking
+
+The inference loop is benchmarked with fixed, pre-tokenized workloads in a
+headless browser, with a correctness gate so speedups cannot come from changing
+what the model computes.
+
+```sh
+npm run bench:setup        # one-time: browser + system libs (no root needed)
+npm run bench:fetch        # one-time: model weights
+node bench/preflight.mjs   # is a real GPU reachable?
+npm run bench              # prefill, decode, and concurrency workloads
+npm run bench:check        # verify logits still match the reference
+```
+
+See [bench/README.md](bench/README.md) for what is measured and why, and
+[bench/SWARM.md](bench/SWARM.md) for the optimization targets and the rules the
+agent swarm works under.

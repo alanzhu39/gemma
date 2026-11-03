@@ -1,0 +1,290 @@
+/**
+ * Correctness gate runner.
+ *
+ *   node bench/check.mjs                 # verify against bench/goldens/
+ *   node bench/check.mjs --record        # write/refresh the golden
+ *   node bench/check.mjs --tolerance 0.05
+ *
+ * Exits non-zero on failure so it can gate merges in CI or be run by agents
+ * before they report an optimization as done.
+ */
+import { chromium } from "playwright";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { createServer } from "vite";
+import { acquireLock } from "./lock.mjs";
+import { chromeArgs, chromeEnv, getGpuDevices, isSoftwareRenderer } from "./chrome.mjs";
+import { execFileSync } from "node:child_process";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(HERE, "..");
+const WEIGHTS = path.join(HERE, ".cache", "model.safetensors");
+const GOLDEN_DIR = path.join(HERE, "goldens");
+
+/**
+ * Goldens are keyed by precision AND device class.
+ *
+ * Different GPUs round differently, and a CPU rasteriser differs from a GPU by
+ * far more than white noise: replaying a SwiftShader-recorded golden on the
+ * GTX 1060 produced 6.2e-4 of scale, which is 62% of the whole 1e-3 tolerance.
+ * Sharing one golden across devices would leave real regressions only 38% of the
+ * budget to show up in, and a slightly noisier device would fail on arithmetic
+ * it never changed.
+ */
+const deviceClass = (rendererString) =>
+	/swiftshader|llvmpipe|software/i.test(rendererString ?? "")
+		? "software"
+		: "hardware";
+
+const argv = process.argv.slice(2);
+const record = argv.includes("--record");
+// --record-missing only writes references that do not exist yet, so adding a new
+// check cannot silently rewrite an existing reference (which would erase the
+// evidence that an optimization changed the output).
+const recordMissing = argv.includes("--record-missing");
+const force = argv.includes("--force");
+
+function git(cmd) {
+	return execFileSync("git", cmd, { cwd: ROOT, encoding: "utf8" }).trim();
+}
+
+if (record || recordMissing) {
+	// A reference recorded from a tree with model changes captures those changes
+	// as "correct", which defeats the entire gate.
+	const dirty = git([
+		"status",
+		"--porcelain",
+		"--",
+		"src/",
+		"bench/check.ts",
+		"bench/f32-model.ts",
+		"patches/",
+		"node_modules/@jax-js",
+	]);
+	if (dirty && !force) {
+		console.error("Refusing to record a golden: the model or check code has uncommitted changes.");
+		console.error(dirty);
+		console.error("\nCommit them first, so the reference is tied to a revision.");
+		console.error("Override with --force only if you are certain this is the intended behaviour.");
+		process.exit(1);
+	}
+}
+const tolIdx = argv.indexOf("--tolerance");
+const tolerance = tolIdx >= 0 ? Number(argv[tolIdx + 1]) : undefined;
+
+/**
+ * Default tolerances, applied per check when --tolerance is not given.
+ *
+ * These are fractions of the logit scale (max |logit|), not element-wise
+ * relative errors: an element-wise metric is dominated by whichever vocabulary
+ * entry happens to sit nearest zero, which is noise rather than signal.
+ *
+ * Decode is tighter than prefill because its argmax guard depends on it. At a
+ * single 2% tolerance, two of four decode steps permitted an absolute error
+ * wider than their real top-2 margin, so their argmax check was skipped
+ * entirely.
+ *
+ * 0.1% is chosen from measured headroom, not convenience:
+ *   - observed noise: 1.3e-7 (attention rewrite), 0.0 (RoPE rewrite)
+ *   - real breakage:  ~1% of scale
+ *   - 0.001 sits ~10,000x above the noise and 10x below a real break, which
+ *     keeps the threshold well conditioned in both directions.
+ * An earlier 0.005 left only 2x headroom against a genuine bug, which is too
+ * thin to trust.
+ */
+const DEFAULT_TOLERANCE = { prefill: 0.005, decode: 0.001 };
+
+if (!fs.existsSync(WEIGHTS)) {
+	console.error(`Missing weights. Run: npm run bench:fetch`);
+	process.exit(1);
+}
+
+// The correctness gate runs the model too; serialise it against benchmarks so
+// we are not measuring each other.
+const release = await acquireLock({
+	onWait: (h) => console.log(`[check] waiting for pid ${h.pid} to finish`),
+});
+process.on("SIGINT", () => {
+	void release();
+	process.exit(130);
+});
+
+const server = await createServer({
+	root: ROOT,
+	configFile: path.join(HERE, "vite.config.ts"),
+	server: { port: 0, strictPort: false },
+	logLevel: "error",
+});
+await server.listen();
+const base = server.resolvedUrls.local[0].replace(/\/$/, "");
+
+const browser = await chromium.launch({
+	headless: true,
+	env: { ...process.env, ...chromeEnv() },
+	// Same flags as the benchmark, so the gate checks the path that was measured.
+	args: chromeArgs({ software: argv.includes("--software") }),
+});
+const page = await browser.newPage();
+page.on("pageerror", (e) => console.error("[page error]", e.message));
+
+// The gate must exercise the same code path the benchmark measures. If the
+// renderer here differs from what a benchmark run would use, say so loudly
+// rather than silently checking the wrong precision.
+const gpuDevices = await getGpuDevices(browser);
+const rendererString = gpuDevices[0] ?? "";
+const software = isSoftwareRenderer(rendererString);
+console.log(`[check] renderer: ${rendererString || "(unknown)"}`);
+if (software) {
+	console.log("[check] software renderer: checking the f32 path only");
+}
+
+// Record every WebGPU error for the whole session.
+//
+// Without this, a validation error is a console line nobody reads and the run
+// still reports PASS. That is a live correctness hole: a buffer destroyed before
+// its command buffer executes produces a *silently zero* tensor, and only a
+// device error announces it. jax-js console.errors uncaptured errors
+// (webgpu-*.js:867) but nothing fails on them.
+await page.addInitScript(() => {
+	window.__gpuErrors = [];
+	// jax-js creates its own device, so intercept requestDevice and attach the
+	// listener to every device the page ever gets. A separate "listen(device)"
+	// helper would never be called by code we do not control.
+	const proto = GPUAdapter.prototype;
+	const original = proto.requestDevice;
+	proto.requestDevice = function (...args) {
+		const p = original.apply(this, args);
+		p.then((device) => {
+			device.addEventListener("uncapturederror", (e) => {
+				window.__gpuErrors.push(String(e.error?.message ?? e.error));
+			});
+		}).catch(() => {});
+		return p;
+	};
+});
+
+await page.goto(`${base}/bench/index.html`, { waitUntil: "load", timeout: 120_000 });
+
+await fsp.mkdir(GOLDEN_DIR, { recursive: true });
+
+// If the page navigates or reloads mid-run, page.evaluate rejects with a
+// destroyed-context error and the run is lost after minutes of work. Retry once
+// from a fresh page rather than failing on a transient.
+const evaluate = async (fn, arg) => {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await page.evaluate(fn, arg);
+		} catch (e) {
+			const msg = String(e?.message ?? e);
+			if (attempt < 2 && /context was destroyed|navigation/i.test(msg)) {
+				console.warn("[check] page navigated mid-run; reloading and retrying once");
+				continue;
+			}
+			throw e;
+		}
+	}
+};
+
+let exitCode = 0;
+try {
+	if (record) {
+		// Two references: a single prefill pass, and a decode trajectory long
+		// enough to wrap the sliding window and grow the global cache. The decode
+		// one covers the code paths the optimizations actually change.
+		const { prefill, decode } = await evaluate(async () => {
+			const m = await import("/bench/check.ts");
+			const adapter = await navigator.gpu.requestAdapter();
+			const precision = adapter.features.has("shader-f16") ? "f16" : "f32";
+			return {
+				prefill: await m.computeLogits(precision),
+				decode: await m.computeDecodeLogits(precision),
+			};
+		});
+
+		const provenance = {
+			gitRev: git(["rev-parse", "HEAD"]),
+			branch: git(["rev-parse", "--abbrev-ref", "HEAD"]),
+			recordedAt: new Date().toISOString(),
+			renderer: rendererString,
+			flags: chromeArgs({ software: argv.includes("--software") }),
+		};
+
+		const write = async (file, doc, label) => {
+			if (recordMissing && fs.existsSync(file)) {
+				console.log(`keeping existing ${path.relative(process.cwd(), file)}`);
+				return;
+			}
+			await fsp.writeFile(file, JSON.stringify({ ...doc, provenance }, null, 2) + "\n");
+			console.log(`recorded ${path.relative(process.cwd(), file)} (${label})`);
+		};
+
+		const cls = deviceClass(rendererString);
+		const file = path.join(GOLDEN_DIR, `${prefill.precision}-${cls}.json`);
+		await write(file, prefill, `argmax=${prefill.argmax}`);
+		const df = path.join(GOLDEN_DIR, `${prefill.precision}-${cls}-decode.json`);
+		await write(df, decode, `ctx=${decode.contextLen} argmax=${decode.steps.map((s) => s.argmax).join(",")}`);
+	} else {
+		const { prefill, decode } = await evaluate(
+			async ({ tolerance, DEFAULTS, cls }) => {
+				const m = await import("/bench/check.ts");
+				const adapter = await navigator.gpu.requestAdapter();
+				const precision = adapter.features.has("shader-f16") ? "f16" : "f32";
+				const load = async (name) => {
+					try {
+						const res = await fetch(`/bench/goldens/${precision}-${cls}${name}.json`);
+						return res.ok ? await res.json() : null;
+					} catch {
+						return null;
+					}
+				};
+				return {
+					prefill: await m.runCheck(await load(""), {
+						tolerance: tolerance ?? DEFAULTS.prefill,
+					}),
+					decode: await m.runDecodeCheck(await load("-decode"), {
+						tolerance: tolerance ?? DEFAULTS.decode,
+					}),
+				};
+			},
+			{ tolerance, DEFAULTS: DEFAULT_TOLERANCE, cls: deviceClass(rendererString) },
+		);
+
+		// Any GPU error at all fails the run. This is checked before the numeric
+		// comparison, because a corrupted computation can still land inside
+		// tolerance by luck, and a destroyed buffer yields zeros which may not
+		// reach the output at all.
+		const gpuErrors = await page.evaluate(() => window.__gpuErrors ?? []);
+		if (gpuErrors.length) {
+			console.error(`[check] ${gpuErrors.length} WebGPU error(s) during the run:`);
+			for (const e of gpuErrors.slice(0, 10)) console.error(`  - ${String(e).slice(0, 200)}`);
+			exitCode = 1;
+		}
+
+		for (const [label, result] of [
+			["prefill", prefill],
+			["decode ", decode],
+		]) {
+			console.log(`[check] ${label} precision: ${result.precision}`);
+			console.log(`[check] ${label} status:    ${result.status.toUpperCase()}`);
+			console.log(`[check] ${label} ${result.message}`);
+			if (result.status === "fail") exitCode = 1;
+			if ((result.status === "no-golden" || result.status === "stale-golden") && exitCode === 0) {
+				exitCode = 2;
+			}
+			if (result.status === "skipped") {
+				console.log(`[check] ${label} skipped (precision mismatch)`);
+			}
+		}
+		if (exitCode === 2) {
+			console.log("\nMissing golden. Record one with: npm run bench:golden");
+		}
+	}
+} finally {
+	await browser.close();
+	await server.close();
+	await release();
+}
+
+process.exit(exitCode);

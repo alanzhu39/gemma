@@ -32,3 +32,13 @@ vite.config.ts.timestamp-*
 __pycache__/
 /scratch
 /templates
+# Benchmark artifacts
+/bench/.cache
+/bench/results/*.json
+!/bench/results/.gitkeep
+
+# Swarm secrets (local SwarmChat tokens)
+/swarm/.env.local
+/swarm/prompts
+/bench/.cache/bench.lock
+/bench/.cache/nvidia-pkgs

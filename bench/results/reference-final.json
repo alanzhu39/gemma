@@ -1,0 +1,152 @@
+{
+	"samples": [
+		{
+			"workload": "prefill-128",
+			"kind": "prefill",
+			"ms": 108.2000002861023,
+			"tokens": 128,
+			"tps": 1182.994451585421,
+			"detail": {
+				"minMs": 105,
+				"p90Ms": 112.5,
+				"meanMs": 110.84285722460065,
+				"spread": 1.071,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "prefill-512",
+			"kind": "prefill",
+			"ms": 431,
+			"tokens": 512,
+			"tps": 1187.9350348027842,
+			"detail": {
+				"minMs": 425.69999980926514,
+				"p90Ms": 441.5,
+				"meanMs": 433.4857142993382,
+				"spread": 1.037,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "prefill-1024",
+			"kind": "prefill",
+			"ms": 1004,
+			"tokens": 1024,
+			"tps": 1019.9203187250996,
+			"detail": {
+				"minMs": 995.0999999046326,
+				"p90Ms": 1008,
+				"meanMs": 1003.6857142448425,
+				"spread": 1.013,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "decode-ctx128",
+			"kind": "decode",
+			"ms": 49.8343750089407,
+			"tokens": 1,
+			"tps": 20.066470178879374,
+			"detail": {
+				"contextLen": 128,
+				"stepsPerRun": 32,
+				"minMs": 46.93437500298023,
+				"p90Ms": 53.43437500298023,
+				"spread": 1.138,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "decode-ctx1024",
+			"kind": "decode",
+			"ms": 50.37187500298023,
+			"tokens": 1,
+			"tps": 19.85234815938131,
+			"detail": {
+				"contextLen": 1024,
+				"stepsPerRun": 32,
+				"minMs": 45.46562500298023,
+				"p90Ms": 51.70000000298023,
+				"spread": 1.137,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "batch-1",
+			"kind": "batch",
+			"ms": 49.08125001192093,
+			"tokens": 1,
+			"tps": 20.374379213184636,
+			"detail": {
+				"batchSize": 1,
+				"totalTps": 20.374379213184636,
+				"batchSupported": 0,
+				"minMs": 45.16875001788139,
+				"p90Ms": 69.03125,
+				"spread": 1.528,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "batch-2",
+			"kind": "batch",
+			"ms": 50.48749999701977,
+			"tokens": 1,
+			"tps": 19.806882892974084,
+			"detail": {
+				"batchSize": 2,
+				"totalTps": 39.61376578594817,
+				"batchSupported": 0,
+				"minMs": 44.70624999701977,
+				"p90Ms": 53.73749999701977,
+				"spread": 1.202,
+				"runs": 7
+			}
+		},
+		{
+			"workload": "batch-4",
+			"kind": "batch",
+			"ms": 45.8203125,
+			"tokens": 1,
+			"tps": 21.824381926683717,
+			"detail": {
+				"batchSize": 4,
+				"totalTps": 87.29752770673487,
+				"batchSupported": 0,
+				"minMs": 42.83281250298023,
+				"p90Ms": 50.125,
+				"spread": 1.17,
+				"runs": 7
+			}
+		}
+	],
+	"sysInfo": {
+		"adapterInfo": {},
+		"isSoftwareRenderer": false,
+		"precision": "f32",
+		"userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.8078.4 Safari/537.36",
+		"backend": "webgpu",
+		"adaptiveFallback": false,
+		"rendererString": "ANGLE (NVIDIA, Vulkan 1.3.277 (NVIDIA NVIDIA GeForce GTX 1060 6GB (0x00001C03)), NVIDIA-550.163.1.0)",
+		"gpuDevices": [
+			"ANGLE (NVIDIA, Vulkan 1.3.277 (NVIDIA NVIDIA GeForce GTX 1060 6GB (0x00001C03)), NVIDIA-550.163.1.0)"
+		],
+		"contention": {
+			"method": "proc-cpu",
+			"cores": 4,
+			"elapsedSec": 113.6,
+			"ownCpuSec": 2.5,
+			"otherCpuSec": 443.2,
+			"otherUtilisation": 0.98,
+			"quiet": false
+		}
+	},
+	"generatedAt": "2026-10-31T00:12:53.419Z",
+	"git": {
+		"rev": "1cd43354b79c0f00865ef7ea5b45264e0bf2d471",
+		"branch": "perf-gemv-warp-per-row",
+		"dirty": false
+	},
+	"note": "Final reference. Decode 2.95x ctx-1024 / 2.98x ctx-128, meeting the 2.0x goal. Prefill 1.03-1.05x against a 1.5x goal, not met. Taken during ~98% external CPU contention in both baseline and this run, so like-for-like. A later re-run read prefill-128 at 1011 vs this run's 1183 with spread 1.29 vs 1.07 - contention, not a regression; prefill-1024 stayed at 1011-1020 across every run. Wall clock on this box is not stable enough to resolve small changes, so the projection figure (68.5 -> 5.6 ms) is the primary evidence for the decode wins."
+}
